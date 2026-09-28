@@ -1,8 +1,10 @@
+mod events;
 mod opencode;
 mod opencode_process;
 mod projects;
 mod sessions;
 mod storage;
+mod usage;
 mod worktrees;
 
 use tauri::{Manager, State};
@@ -45,6 +47,51 @@ async fn managed_opencode_server_status(
     manager: State<'_, opencode_process::OpenCodeProcessManager>,
 ) -> Result<opencode_process::OpenCodeProcessStatus, String> {
     manager.status().await
+}
+
+#[tauri::command]
+async fn start_opencode_event_stream(
+    app: tauri::AppHandle,
+    base_url: String,
+    username: String,
+    password: String,
+    manager: State<'_, events::OpenCodeEventManager>,
+) -> Result<(), String> {
+    manager.start(app, &base_url, &username, &password).await
+}
+
+#[tauri::command]
+async fn stop_opencode_event_stream(
+    app: tauri::AppHandle,
+    manager: State<'_, events::OpenCodeEventManager>,
+) -> Result<(), String> {
+    manager.stop(&app).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_opencode_usage(
+    base_url: String,
+    username: String,
+    password: String,
+    utc_offset_minutes: i64,
+    timezone: String,
+    local_day_start_ms: i64,
+    local_month_start_ms: i64,
+    days: i64,
+) -> Result<usage::UsageOverview, String> {
+    usage::fetch_overview(
+        &base_url,
+        &username,
+        &password,
+        "go",
+        utc_offset_minutes,
+        &timezone,
+        local_day_start_ms,
+        local_month_start_ms,
+        days,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -193,12 +240,14 @@ async fn reply_to_worktree_permission(
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             let database = tauri::async_runtime::block_on(storage::connect(app_data_dir))
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             app.manage(database);
             app.manage(opencode_process::OpenCodeProcessManager::default());
+            app.manage(events::OpenCodeEventManager::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -207,6 +256,9 @@ pub fn run() {
             start_managed_opencode_server,
             stop_managed_opencode_server,
             managed_opencode_server_status,
+            start_opencode_event_stream,
+            stop_opencode_event_stream,
+            get_opencode_usage,
             list_projects,
             create_project,
             update_project,
@@ -223,6 +275,8 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
+            let event_manager = app_handle.state::<events::OpenCodeEventManager>();
+            tauri::async_runtime::block_on(event_manager.stop(app_handle));
             let process_manager = app_handle.state::<opencode_process::OpenCodeProcessManager>();
             // Tauri exits the process directly after RunEvent::Exit, so explicitly stop
             // the child here instead of relying on async Child drop during runtime teardown.

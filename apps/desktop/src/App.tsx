@@ -1,9 +1,11 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open as openDirectoryDialog } from "@tauri-apps/plugin-dialog";
 import brandLogo from "./assets/logo.webp";
 import "./App.css";
 import "./brand.css";
+import UsagePage from "./usage/UsagePage";
 
 interface OpenCodeHealth {
   healthy: boolean;
@@ -95,6 +97,12 @@ interface SessionSnapshot {
   permissionWarning: string | null;
 }
 
+interface EventStreamStatus {
+  state: "connecting" | "connected" | "reconnecting" | "error" | "stopped";
+  retryInMs: number | null;
+  message: string | null;
+}
+
 type ConnectionState =
   | { kind: "idle" }
   | { kind: "checking" }
@@ -108,7 +116,7 @@ type CatalogState =
   | { kind: "error"; message: string };
 
 function App() {
-  const [page, setPage] = useState<"dashboard" | "projects">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "projects" | "usage">("dashboard");
   const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:4096");
   const [username, setUsername] = useState("opencode");
   const [password, setPassword] = useState("");
@@ -147,6 +155,16 @@ function App() {
   const [taskSnapshotErrors, setTaskSnapshotErrors] = useState<Record<number, string>>({});
   const [taskAcceptedAt, setTaskAcceptedAt] = useState<Record<number, string>>({});
   const [permissionBusyId, setPermissionBusyId] = useState<string | null>(null);
+  const [eventStreamStatus, setEventStreamStatus] = useState<EventStreamStatus>({
+    state: "stopped",
+    retryInMs: null,
+    message: null,
+  });
+  const [lastRealtimeSync, setLastRealtimeSync] = useState<number | null>(null);
+  const knownWorktreesRef = useRef<Worktree[]>([]);
+  const taskSnapshotsRef = useRef(taskSnapshots);
+  knownWorktreesRef.current = Object.values(worktreesByProject).flat();
+  taskSnapshotsRef.current = taskSnapshots;
 
   async function refreshProjects(includeArchived: boolean) {
     setProjectsLoading(true);
@@ -187,6 +205,92 @@ function App() {
       window.clearInterval(interval);
     };
   }, [managedServerState]);
+
+  useEffect(() => {
+    if (connection.kind !== "connected") {
+      setEventStreamStatus({ state: "stopped", retryInMs: null, message: null });
+      setLastRealtimeSync(null);
+      return;
+    }
+
+    let disposed = false;
+    let statusUnlisten: (() => void) | undefined;
+    let changeUnlisten: (() => void) | undefined;
+    let reconciliationTimer: number | null = null;
+    let reconciliationRunning = false;
+    let reconciliationRequested = false;
+    let needsFullReconciliation = true;
+
+    const reconcile = async () => {
+      if (disposed) return;
+      if (reconciliationRunning) {
+        reconciliationRequested = true;
+        return;
+      }
+
+      reconciliationRunning = true;
+      do {
+        reconciliationRequested = false;
+        const candidates = knownWorktreesRef.current.filter((worktree) =>
+          worktree.opencodeSessionId
+          && worktree.opencodeLocationMatches === true
+          && (needsFullReconciliation || taskSnapshotsRef.current[worktree.id] !== undefined),
+        );
+        needsFullReconciliation = false;
+        await reconcileWorktreeSnapshots(candidates, () => disposed);
+      } while (reconciliationRequested && !disposed);
+
+      reconciliationRunning = false;
+      if (!disposed) setLastRealtimeSync(Date.now());
+    };
+
+    const scheduleReconciliation = () => {
+      if (disposed || reconciliationTimer !== null) return;
+      reconciliationTimer = window.setTimeout(() => {
+        reconciliationTimer = null;
+        void reconcile();
+      }, 900);
+    };
+
+    const start = async () => {
+      setEventStreamStatus({ state: "connecting", retryInMs: null, message: null });
+      try {
+        statusUnlisten = await listen<EventStreamStatus>("opencode-event-stream-status", (event) => {
+          if (disposed) return;
+          setEventStreamStatus(event.payload);
+          if (event.payload.state === "connected") {
+            needsFullReconciliation = true;
+            scheduleReconciliation();
+          }
+        });
+        changeUnlisten = await listen("opencode-state-changed", scheduleReconciliation);
+        if (disposed) {
+          statusUnlisten();
+          changeUnlisten();
+          return;
+        }
+
+        await invoke("start_opencode_event_stream", { baseUrl, username, password });
+      } catch {
+        if (!disposed) {
+          setEventStreamStatus({
+            state: "error",
+            retryInMs: null,
+            message: "No se pudo iniciar la suscripción a eventos de OpenCode.",
+          });
+        }
+      }
+    };
+
+    void start();
+    return () => {
+      disposed = true;
+      if (reconciliationTimer !== null) window.clearTimeout(reconciliationTimer);
+      statusUnlisten?.();
+      changeUnlisten?.();
+      void invoke("stop_opencode_event_stream").catch(() => undefined);
+    };
+  }, [connection.kind, baseUrl, username, password]);
 
   function openProjectDialog(project?: Project) {
     setEditingProject(project ?? null);
@@ -262,6 +366,9 @@ function App() {
     try {
       const result = await invoke<Worktree[]>("list_project_worktrees", { projectId });
       setWorktreesByProject((current) => ({ ...current, [projectId]: result }));
+      if (connection.kind === "connected") {
+        void reconcileWorktreeSnapshots(result.filter((worktree) => !taskSnapshotsRef.current[worktree.id]));
+      }
     } catch (error) {
       setWorktreesErrors((current) => ({ ...current, [projectId]: String(error) }));
     } finally {
@@ -405,6 +512,37 @@ function App() {
     }
   }
 
+  async function reconcileWorktreeSnapshots(worktrees: Worktree[], isCancelled: () => boolean = () => false) {
+    if (connection.kind !== "connected" || isCancelled()) return;
+    const sessions = worktrees.filter((worktree) =>
+      worktree.status === "ready"
+      && worktree.opencodeSessionId
+      && worktree.opencodeLocationMatches === true,
+    );
+
+    for (let index = 0; index < sessions.length; index += 4) {
+      if (connection.kind !== "connected" || isCancelled()) return;
+      const batch = sessions.slice(index, index + 4);
+      await Promise.all(batch.map(async (worktree) => {
+        try {
+          const snapshot = await invoke<SessionSnapshot>("refresh_worktree_session", {
+            baseUrl,
+            username,
+            password,
+            worktreeId: worktree.id,
+          });
+          if (isCancelled()) return;
+          setTaskSnapshots((current) => ({ ...current, [worktree.id]: snapshot }));
+          setTaskSnapshotErrors((current) => ({ ...current, [worktree.id]: "" }));
+        } catch (error) {
+          if (!isCancelled()) {
+            setTaskSnapshotErrors((current) => ({ ...current, [worktree.id]: String(error) }));
+          }
+        }
+      }));
+    }
+  }
+
   async function answerPermission(worktree: Worktree, permission: PendingPermission, allowOnce: boolean) {
     if (connection.kind !== "connected") return;
     setPermissionBusyId(permission.id);
@@ -504,6 +642,18 @@ function App() {
   const isChecking = connection.kind === "checking";
   const isCatalogLoading = catalogState.kind === "loading";
   const connectionFieldsDisabled = isChecking || isCatalogLoading || managedServerState !== "stopped";
+  const realtimeSyncTime = lastRealtimeSync
+    ? new Date(lastRealtimeSync).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : null;
+  const realtimeStatusText = eventStreamStatus.state === "connected"
+    ? realtimeSyncTime ? `En vivo · sincronizado ${realtimeSyncTime}` : "En vivo · sincronizando sesiones"
+    : eventStreamStatus.state === "reconnecting"
+      ? `Reconectando${eventStreamStatus.retryInMs ? ` en ${Math.ceil(eventStreamStatus.retryInMs / 1000)} s` : ""} · el estado puede estar desactualizado`
+      : eventStreamStatus.state === "error"
+        ? eventStreamStatus.message ?? "Eventos no disponibles · usa Actualizar estado"
+        : eventStreamStatus.state === "connecting"
+          ? "Conectando al flujo de eventos…"
+          : "Eventos en pausa";
 
   return (
     <div className="app-shell">
@@ -528,6 +678,11 @@ function App() {
             <span>Proyectos</span>
             {page === "projects" && <span className="nav-indicator" />}
           </button>
+          <button className={`nav-item ${page === "usage" ? "active" : ""}`} type="button" onClick={() => setPage("usage")}>
+            <span className="nav-icon usage-icon" aria-hidden="true" />
+            <span>Uso</span>
+            {page === "usage" && <span className="nav-indicator" />}
+          </button>
           <button className="nav-item" type="button" disabled>
             <span className="nav-icon activity-icon" aria-hidden="true" />
             <span>Actividad</span>
@@ -542,11 +697,11 @@ function App() {
 
       <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumb"><span>Stade Studio</span><i>/</i><strong>{page === "dashboard" ? "Resumen" : "Proyectos"}</strong></div>
+          <div className="breadcrumb"><span>Stade Studio</span><i>/</i><strong>{page === "dashboard" ? "Resumen" : page === "usage" ? "Uso" : "Proyectos"}</strong></div>
           <div className="local-badge"><span className="local-badge-dot" /> DATOS LOCALES</div>
         </header>
 
-        {page === "dashboard" ? (
+        {page === "dashboard" && (
           <>
         <section className="page-heading">
           <div>
@@ -578,6 +733,12 @@ function App() {
             <div className="metric-footnote">
               {connection.kind === "connected" ? `Versión ${connection.version}` : "Servidor local · puerto 4096"}
             </div>
+            {connection.kind === "connected" && (
+              <div className={`event-stream-status stream-${eventStreamStatus.state}`} role="status" aria-live="polite" title={eventStreamStatus.message ?? undefined}>
+                <span className="event-stream-dot" aria-hidden="true" />
+                {realtimeStatusText}
+              </div>
+            )}
           </article>
         </section>
 
@@ -803,7 +964,9 @@ function App() {
         )}
 
           </>
-        ) : (
+        )}
+
+        {page === "projects" && (
           <section className="projects-page">
             <div className="page-heading projects-page-heading">
               <div>
@@ -1001,6 +1164,17 @@ function App() {
               </div>
             )}
           </section>
+        )}
+
+        {page === "usage" && (
+          <UsagePage
+            connected={connection.kind === "connected"}
+            baseUrl={baseUrl}
+            username={username}
+            password={password}
+            catalogModels={catalogState.kind === "loaded" ? catalogState.catalog.models : null}
+            onOpenPanel={() => setPage("dashboard")}
+          />
         )}
 
         {projectDialogOpen && (

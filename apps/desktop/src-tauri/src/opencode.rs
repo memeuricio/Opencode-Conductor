@@ -70,7 +70,7 @@ pub struct OpenCodeCatalog {
     warnings: Vec<String>,
 }
 
-fn validate_local_base_url(base_url: &str) -> Result<Url, String> {
+pub(crate) fn validate_local_base_url(base_url: &str) -> Result<Url, String> {
     let mut url = Url::parse(base_url.trim()).map_err(|_| "La URL no es válida".to_string())?;
 
     if url.scheme() != "http" {

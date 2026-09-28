@@ -23,6 +23,7 @@ La especificación funcional y los criterios de aceptación están en [`docs/ESP
 - El servidor v2 de prueba anunció una contraseña temporal al iniciarse y protegió la API con Basic Auth. Si la aplicación inicia el proceso, debe capturar esa credencial en memoria. Nunca imprimirla en logs, eventos, errores, SQLite o archivos de configuración ni mostrarla sin enmascarar en la UI. Al conectarse a un proceso externo, pedir la credencial sin persistirla por defecto.
 - Limitar conexiones a `localhost`/loopback en el MVP. Rechazar URLs externas, credenciales embebidas en URL y rutas inesperadas salvo que exista un requisito aprobado.
 - Validar los endpoints y eventos contra `openapi.json` del binario instalado; las páginas generales pueden documentar rutas de otra versión.
+- `GET /api/event` es SSE volátil: no reproduce eventos perdidos al reconectar. Usar los eventos como invalidaciones y reconciliar el estado consultando las rutas de sesión; no retransmitir payloads con prompts/respuestas a la GUI.
 
 ## Arquitectura y seguridad
 
@@ -51,8 +52,9 @@ npm install
 npm run typecheck
 npm run build
 npm run tauri dev
-npm run tauri -- build --no-bundle
 ```
+
+`npm run build` compila la GUI de Vite; no crea un binario Release de Tauri. La compilación Release es lenta y **no debe ejecutarse de rutina**. Ejecutar `npm run tauri -- build --no-bundle` (o cualquier build/package Release de Tauri) solo si es estrictamente necesario y después de recibir aprobación explícita del usuario para esa ejecución.
 
 Desde `apps/desktop/src-tauri`:
 

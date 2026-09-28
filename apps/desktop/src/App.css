@@ -95,6 +95,11 @@ h1 { margin: 0; color: #f7f3fa; font-size: clamp(26px, 3vw, 34px); font-weight: 
 .metric-value { margin-top: 11px; color: #f2edf7; font-size: 25px; font-weight: 600; letter-spacing: -.04em; }
 .metric-status { display: flex; align-items: center; gap: 8px; font-size: 18px; }
 .metric-footnote { margin-top: 4px; color: #827c8a; font-size: 9px; }
+.event-stream-status { display: flex; align-items: center; gap: 5px; margin-top: 6px; color: #827c8a; font-size: 8px; line-height: 1.4; }
+.event-stream-dot { width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: #716b79; }
+.stream-connected .event-stream-dot { background: #7bd6ae; box-shadow: 0 0 7px rgba(123, 214, 174, .45); }
+.stream-connecting .event-stream-dot, .stream-reconnecting .event-stream-dot { background: #f0c674; }
+.stream-error .event-stream-dot { background: #f17f87; }
 .status-indicator { width: 7px; height: 7px; border-radius: 50%; background: #6d6873; }
 .status-indicator.connected { background: #70d1a4; box-shadow: 0 0 9px rgba(112, 209, 164, .5); }
 .status-indicator.checking { background: #f0c674; animation: pulse 1s infinite; }
