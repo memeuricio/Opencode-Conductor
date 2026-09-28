@@ -1,18 +1,18 @@
 # Especificación — orquestador local de agentes OpenCode
 
-**Nombre del producto:** OpenCode Conductor  
-**Repositorio sugerido:** `opencode-conductor` (proyecto comunitario, no oficial)
+**Nombre del producto:** Stade Studio
+**Repositorio sugerido:** `stade-studio` (proyecto comunitario, no oficial)
 
 **Estado:** desarrollo iniciado; primera prueba vertical en progreso  
-**Versión:** 0.3  
-**Fecha:** 2026-09-25  
+**Versión:** 0.9
+**Fecha:** 2026-09-28
 **Alcance confirmado:** aplicación local para un operador; el usuario tiene una suscripción/plan OpenCode Go para acceder a modelos. OpenCode Go no es el nombre de esta aplicación ni un runtime que esta deba ejecutar.
 
 ## 1. Objetivo
 
 Construir una aplicación de escritorio local desde la que el usuario pueda administrar varios proyectos y sesiones OpenCode, asignar modelos/agentes por especialidad, coordinar tareas entre ellos y recibir sus avances, bloqueos y solicitudes de decisión, sin tener una consola de terminal abierta por proyecto.
 
-El MVP corre en el equipo del usuario y se conecta a procesos `opencode serve` locales. La aplicación puede iniciar/administrar esos procesos en segundo plano para ocultar las consolas, además de conectarse a un servidor que el usuario ya haya iniciado. No requiere VPS, cuentas multiusuario ni conectores remotos. El soporte de VPS/múltiples equipos queda para una rama o fase separada.
+El MVP corre en Windows, en el equipo del usuario, y se conecta a procesos `opencode serve` locales. La aplicación puede iniciar/administrar esos procesos en segundo plano para ocultar las consolas, además de conectarse a un servidor que el usuario ya haya iniciado. No requiere VPS, cuentas multiusuario ni conectores remotos. macOS/Linux no son objetivos de esta etapa; el soporte de VPS/múltiples equipos queda para una rama o fase separada.
 
 ## 2. Decisiones y aclaraciones de producto
 
@@ -45,7 +45,7 @@ El MVP corre en el equipo del usuario y se conecta a procesos `opencode serve` l
 
 ### Verificación específica de OpenCode v2
 
-- En el entorno de desarrollo se detectó OpenCode **v2.0.16**. El API probado expone información en `GET /api/info` y los endpoints v2 están bajo `/api/`; no se debe asumir que la ruta v1 `GET /global/health` sea válida para esta versión (puede devolver la SPA HTML).
+- En el entorno inicial se detectó OpenCode **v2.0.16** y después **v2.0.18**. La API v2 probada expone información en `GET /api/info` y sus endpoints están bajo `/api/`; no se debe asumir que la ruta v1 `GET /global/health` sea válida (puede devolver la SPA HTML).
 - El API requiere Basic Auth cuando el servidor se inicia con contraseña. En la prueba local v2 anunció una contraseña temporal en stdout aunque no había una variable de contraseña en el entorno. La aplicación debe capturar la salida del proceso administrado y mantener la credencial solo en memoria; al conectarse a un proceso externo, pedir usuario/contraseña sin persistirlos por defecto.
 - El contrato se debe contrastar con `GET /openapi.json` de la versión ejecutada. Las rutas y la generación de contraseña pueden cambiar; no copiar ciegamente ejemplos v1 de documentación general.
 
@@ -75,7 +75,9 @@ El coordinador asigna tareas a perfiles/modelos configurados, crea o utiliza ses
 - La aplicación no copia credenciales OpenCode Go ni claves de proveedor; delega autenticación y selección de modelos a la instalación OpenCode.
 - Iniciar/abortar sesiones y aprobar permisos son acciones visibles y auditables. No habilitar ejecución arbitraria de shell desde controles propios de la plataforma.
 - Registrar metadatos de eventos por defecto; excluir texto de prompts/respuestas y secretos, salvo que una decisión posterior habilite expresamente contenido con políticas de retención.
-- Coordinar escrituras al mismo repositorio: no lanzar tareas paralelas con ámbitos de archivos solapados salvo que el usuario lo permita. Guardar checkpoint Git antes de automatizar cambios; worktrees aislados pueden ser una iteración posterior.
+- Cada agente de código trabaja en su propio worktree y branch; intercambia contexto mediante handoffs y no edita directamente el worktree de otro agente. Mantener la integración como un paso separado y revisable, y usar ámbitos de archivos para reducir conflictos.
+- Un worktree no es un sandbox del sistema operativo: si el requisito es impedir también accesos por rutas absolutas o herramientas de shell a otros directorios, añadir y probar aislamiento de Windows (por ejemplo, identidad/ACL separadas) antes de afirmar que está bloqueado técnicamente.
+- Guardar checkpoint Git antes de automatizar cambios; nunca combinar ramas sin una acción de integración visible y auditable.
 
 ## 5. Modelo de dominio mínimo
 
@@ -144,7 +146,7 @@ El coordinador asigna tareas a perfiles/modelos configurados, crea o utiliza ses
 4. En una prueba de flujo, el agente de base de datos usa una herramienta de coordinación para entregar esquema/migración; backend recibe ese handoff en su tarea y produce contrato/API; frontend recibe ese contrato y puede continuar. Cada llamada de herramienta queda autenticada y asociada a la tarea y sesión OpenCode correctas.
 5. Si un agente necesita una decisión, la tarea queda bloqueada y la interfaz presenta pregunta/contexto; tras la respuesta, el agente puede continuar con esa respuesta en su contexto.
 6. El usuario ve tareas, sesiones y eventos SSE en una vista; tras pérdida de conexión se reconcilia el estado y las tareas pendientes sobreviven al reinicio de la aplicación.
-7. Se advierten conflictos de alcance de archivos antes de ejecutar trabajo paralelo que pueda sobrescribir cambios.
+7. Cada tarea concurrente usa su propio worktree/branch de Git y su sesión apunta a ese directorio; las entregas se comunican mediante handoffs y la integración al árbol principal es un paso separado y revisable.
 8. No se copian credenciales OpenCode Go ni se guardan prompts/respuestas por defecto; no se exponen servidores a la red.
 
 ## 9. Plan de entrega recomendado
@@ -152,8 +154,8 @@ El coordinador asigna tareas a perfiles/modelos configurados, crea o utiliza ses
 1. **Fase 0 — prueba técnica:** compilar una ventana Tauri mínima; iniciar/terminar `opencode serve` sin consola; capturar de forma segura la contraseña generada; consultar modelos/perfiles y consumir SSE desde Rust; comprobar custom tool/MCP con identidad fiable de sesión y callback autenticado al coordinador.
 2. **Fase 1 — escritorio unificado:** navegación Tauri, administración de proyectos, arranque/conexión OpenCode, modelos/perfiles, sesiones y actividad SSE. Primera meta: dejar de manejar varias consolas.
 3. **Fase 2 — colaboración durable:** SQLite, roles especializados, tareas/dependencias, router configurable, puente de herramientas seguro, handoffs estructurados, timeline y solicitudes de decisión al usuario.
-4. **Fase 3 — ejecución segura:** prompt/abort desde UI, control de permisos, ámbitos de archivos/conflictos, historial, resiliencia y pruebas del flujo DB → backend → frontend.
-5. **Fase 4 — calidad de vida local:** notificaciones de escritorio, worktrees Git por agente, resumen/revisión de cambios y heurísticas de recomendación de modelos.
+4. **Fase 3 — ejecución segura:** prompt/abort desde UI, worktrees Git aislados por tarea/agente, control de permisos, ámbitos de archivos/conflictos, integración revisable, historial, resiliencia y pruebas del flujo DB → backend → frontend.
+5. **Fase 4 — calidad de vida local:** notificaciones de escritorio, resumen/revisión de cambios y heurísticas de recomendación de modelos.
 6. **Rama futura independiente — remoto/VPS:** autenticación multiusuario, conector outbound y seguridad entre máquinas. Fuera del MVP y no debe condicionar el diseño inicial salvo mantener un límite API razonable.
 
 ## 10. Dificultad y delegación a modelos
@@ -180,31 +182,48 @@ Escala: **1** = tarea pequeña y bien delimitada; **10** = alta ambigüedad, int
 
 **Regla práctica de selección:** 1–3 puede ir a un modelo económico; 4–6 a un modelo competente de código; 7–8 a un modelo fuerte con tests y revisión; 9–10 al modelo más capaz disponible más revisión humana. No delegar tareas de seguridad o decisiones ambiguas como “implementa todo” sin interfaces y criterios de aceptación.
 
-## 11. Decisiones pendientes de producto (con valores predeterminados propuestos)
+## 11. Decisiones de producto acordadas
 
-El stack queda cerrado; estas son decisiones de comportamiento. Se proponen valores para poder empezar sin más diseño técnico:
+El stack queda cerrado y se acordaron estas decisiones de comportamiento el 28 de septiembre de 2026:
 
-1. **Sistema operativo:** validar primero Windows (entorno actual) y mantener el código portable para macOS/Linux. Confirmar si necesitas otro objetivo desde la primera versión.
-2. **Autonomía:** el usuario revisa/aprueba el plan inicial; después las tareas dependientes se ejecutan automáticamente. Pausar y pedir opinión ante ambigüedad, error, permiso sensible o conflicto de archivos.
-3. **Cambios de código:** permitir a los agentes editar el proyecto; ejecutar en serie tareas con dependencias y permitir paralelismo solo para ámbitos de archivos distintos. Advertir antes de tareas solapadas. Dejar worktrees aislados para una fase posterior.
+1. **Sistema operativo:** Windows es el único objetivo del producto en esta etapa. No invertir esfuerzo en compatibilidad macOS/Linux.
+2. **Autonomía:** maximizar la ejecución automática dentro de límites seguros. El usuario revisa/aprueba el plan inicial; después se ejecutan automáticamente las tareas listas y sus dependencias. Pausar ante permisos sensibles, ambigüedad que cambie el alcance, fallos que requieran decisión o integración/revisión de cambios.
+3. **Aislamiento y comunicación:** cada agente/tarea de código trabaja en su propio worktree y branch de Git. Los agentes se comunican mediante handoffs durables; no comparten ni editan directamente el directorio de trabajo de otro agente. Integrar cambios al árbol principal es una operación separada, controlada y revisable. Los worktrees separan los cambios de Git, pero no son un límite de seguridad del sistema operativo; si hace falta impedir también accesos arbitrarios a otros directorios mediante shell/tools, se necesitará aislamiento adicional de Windows y deberá probarse antes de prometer esa garantía.
 4. **Modelo:** recomendar por rol/capacidad y preferencia configurada; el usuario puede override. No cambiar de modelo automáticamente tras fallos salvo que habilite explícitamente el fallback.
 5. **Historial:** SQLite guarda estado, eventos, handoffs y resúmenes; las conversaciones completas permanecen en OpenCode y no se duplican por defecto.
 6. **Arranque OpenCode:** la aplicación inicia y administra procesos `opencode serve` en segundo plano; también puede conectarse a un proceso existente si el usuario lo prefiere.
 7. **Notificaciones:** preguntas/bloqueos aparecen en una bandeja/inbox dentro de la GUI; notificaciones del sistema operativo quedan opcionales.
+8. **Identidad visual:** la aplicación se llama Stade Studio. La GUI usa una presentación cozy y minimalista, con versiones pastel de los colores institucionales rojo `#ff3333`, ámbar `#ffb433` e índigo `#333395`, más grises cálidos.
 
-Las decisiones 1–3 son las únicas que conviene confirmar antes de cerrar criterios de aceptación. Si no se especifica otra cosa, usar los valores predeterminados anteriores.
+El paralelismo debe respetar dependencias y minimizar conflictos de archivos; cualquier combinación de ramas ocurre en el paso de integración, no escribiendo en el worktree de otro agente.
 
 ## 12. Referencias oficiales para los implementadores
 
-- [OpenCode Server](https://opencode.ai/docs/server/) — `opencode serve`, autenticación, SSE (`GET /event`), sesiones, estados y agentes.
-- [OpenCode SDK](https://opencode.ai/docs/sdk/) — referencia de métodos/esquemas; el backend Tauri consumirá HTTP/OpenAPI desde Rust, no este SDK directamente.
-- [OpenCode MCP servers](https://opencode.ai/docs/mcp-servers/) — herramientas MCP disponibles para modelos OpenCode.
-- [OpenCode Custom Tools](https://opencode.ai/docs/custom-tools/) — alternativa a MCP; revisar contexto de sesión disponible para validar handoffs.
-- Las páginas oficiales indicaban actualización al **25 de septiembre de 2026** al redactar esta especificación. La prueba local con v2.0.16 encontró diferencias respecto a rutas citadas en las páginas generales; usar el OpenAPI servido por el binario objetivo como contrato definitivo.
+- [OpenCode CLI v2](https://opencode.ai/v2/docs/cli) — ciclo de vida de `opencode serve`.
+- [OpenCode API v2](https://opencode.ai/v2/docs/api) y [cliente v2](https://opencode.ai/v2/docs/build/client) — contrato HTTP/OpenAPI y conexión Rust.
+- [OpenCode permisos v2](https://opencode.ai/v2/docs/permissions), [agentes](https://opencode.ai/v2/docs/agents), [modelos](https://opencode.ai/v2/docs/models) y [MCP](https://opencode.ai/v2/docs/mcp-servers).
+- [Plugins v2](https://opencode.ai/v2/docs/build/plugins) — extensión de herramientas; revisar este contrato al prototipar custom tools/MCP ligado a sesión.
+- El OpenAPI servido por el binario instalado sigue siendo el contrato definitivo: las páginas generales pueden adelantarse o diferir de la versión local.
 
-## 13. Estado de la primera prueba vertical
+## 13. Estado de la prueba vertical
 
 - Scaffold Tauri 2 + React/TypeScript creado en `apps/desktop`.
-- Rust valida direcciones loopback, usa Basic Auth en memoria y consulta `GET /api/info`; la interfaz muestra versión/errores.
-- Verificaciones ejecutadas: `npm run typecheck`, `npm run build`, `cargo fmt --check`, `cargo test` (2 pruebas de validación URL) y `npm run tauri -- build --no-bundle` (Windows, release).
-- Aún no implementado: arranque/gestión de OpenCode por la app, listado real de agentes/modelos, SSE, SQLite, coordinación de tareas y handoffs.
+- Rust valida direcciones loopback, usa Basic Auth en memoria y consulta `GET /api/info`; tras conectar, la interfaz puede descubrir perfiles con `GET /api/agent` y modelos con `GET /api/model`.
+- El catálogo solo devuelve campos de presentación y tolera que uno de los endpoints no esté disponible. La compatibilidad final de rutas/eventos debe seguir contrastándose con `openapi.json` del servidor instalado.
+- Proyectos locales: alta mediante selector de carpeta, listado, edición de metadatos y archivado/restauración. SQLite + SQLx guarda únicamente datos de proyecto en el directorio de datos de la app; no se elimina ni copia el contenido de las carpetas registradas.
+- Worktrees: se pueden crear/listar por proyecto con branch único desde el último commit. Se bloquea la creación si el repositorio tiene cambios rastreados o archivos no rastreados; las rutas quedan bajo el directorio de datos de la app. Esta separación no es un sandbox del sistema operativo.
+- Sesiones y tareas: la app crea sesiones en la ruta exacta del worktree, verifica esa ruta antes de cada acción y permite enviar prompts explícitamente. Los prompts no se duplican en SQLite; OpenCode mantiene el historial. La UI puede consultar estado/respuesta y permisos pendientes; ofrece aprobar solo una vez o rechazar, nunca guardar aprobación permanente desde esta vista.
+- Procesos OpenCode: la app puede iniciar `opencode serve` sin consola, limitado a `127.0.0.1`, capturar la contraseña temporal de stdout en memoria, validar `/api/info` y detener su propio proceso. También puede conectarse a servidores locales ya iniciados; no administra ni termina esos procesos.
+- No hay todavía SSE ni actualización automática: el operador refresca el estado desde la tarjeta del entorno. La prueba interactiva de envío/permiso contra el OpenCode v2.0.18 instalado debe confirmarse en la app.
+- Verificaciones ejecutadas: `npm run typecheck`, `npm run build`, `cargo fmt --check`, `cargo test` (13 pasan; 1 smoke test se omite por defecto) y `npm run tauri -- build --no-bundle` (Windows). El smoke test de inicio/autenticación/parada se ejecutó explícitamente contra OpenCode v2.0.18.
+- Aún no implementado: SSE/reconexión, tareas y dependencias durables, comunicación/handoffs entre agentes e integración revisable de cambios.
+
+## 14. Próximos pasos priorizados
+
+1. **Validación en GUI con OpenCode v2.0.18:** probar el botón de inicio, conexión/catálogo automáticos, detener el proceso, puerto ocupado, CLI ausente y cierre de la app. Después cubrir envío de tarea, respuesta, permisos `once`/`reject`, credenciales erróneas, sesión desaparecida y endpoint de permisos no disponible. No compartir contraseñas ni prompts en diagnósticos.
+2. **Aislamiento Windows:** hacer una prueba técnica de los límites reales de worktrees y permisos OpenCode. Antes de permitir ejecución desatendida/paralela amplia, decidir si hace falta aislamiento de proceso/cuenta/ACL; el worktree por sí solo no es sandbox.
+3. **Actividad en tiempo real:** sustituir el refresco manual por SSE con reconexión/reconciliación y señalar permisos pendientes sin guardar mensajes completos en SQLite.
+4. **Coordinación durable:** añadir tareas, estados, dependencias, entregables y decisiones de usuario en SQLite; implementar handoffs estructurados ligados a la sesión/tarea, no a IDs arbitrarios del modelo.
+5. **Integración revisable:** comparar cambios de cada branch/worktree, mostrar diff y permitir integración explícita al checkout principal; proteger cambios locales y resolver conflictos sin sobrescribirlos.
+6. **Almacenamiento de worktrees:** actualmente cuelgan de `AppData\Roaming`; moverlos a `LocalAppData` para evitar roaming/sincronización accidental y añadir una acción visible para abrir la carpeta. Mantenerlos fuera del checkout principal.
+7. **Pruebas E2E:** proyecto → worktree → sesión → tarea → permiso/pregunta → handoff → agente siguiente → revisión/integración, incluyendo reinicio y pérdida de conexión.
