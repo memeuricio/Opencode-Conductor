@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenCode Conductor",
+  "productName": "Stade Studio",
   "version": "0.1.0",
   "identifier": "com.opencode.conductor",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-          "title": "OpenCode Conductor",
+          "title": "Stade Studio",
           "width": 1180,
           "height": 780,
           "minWidth": 940,

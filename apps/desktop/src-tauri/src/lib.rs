@@ -1,139 +1,232 @@
-use std::time::Duration;
+mod opencode;
+mod opencode_process;
+mod projects;
+mod sessions;
+mod storage;
+mod worktrees;
 
-use serde::{Deserialize, Serialize};
-use url::{Host, Url};
-
-#[derive(Debug, Deserialize)]
-struct OpenCodeInfo {
-    version: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OpenCodeHealth {
-    healthy: bool,
-    version: String,
-}
-
-fn validate_local_base_url(base_url: &str) -> Result<Url, String> {
-    let mut url = Url::parse(base_url.trim()).map_err(|_| "La URL no es válida".to_string())?;
-
-    if url.scheme() != "http" {
-        return Err("Por seguridad, la conexión local debe usar HTTP".to_string());
-    }
-
-    if !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err("La URL no debe incluir credenciales, query ni fragmento".to_string());
-    }
-
-    let is_loopback = match url.host() {
-        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
-        None => false,
-    };
-
-    if !is_loopback {
-        return Err(
-            "Solo se permiten servidores OpenCode locales (localhost/loopback)".to_string(),
-        );
-    }
-
-    if url.path() != "/" && !url.path().is_empty() {
-        return Err("Introduce la URL base, sin una ruta adicional".to_string());
-    }
-
-    url.set_path("");
-    Ok(url)
-}
+use tauri::{Manager, State};
 
 #[tauri::command]
 async fn check_opencode_connection(
     base_url: String,
     username: String,
     password: String,
-) -> Result<OpenCodeHealth, String> {
-    let mut url = validate_local_base_url(&base_url)?;
-    url.set_path("/api/info");
+) -> Result<opencode::OpenCodeHealth, String> {
+    opencode::check_connection(&base_url, &username, &password).await
+}
 
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(4))
-        .build()
-        .map_err(|error| format!("No se pudo preparar la conexión: {error}"))?;
+#[tauri::command]
+async fn discover_opencode_catalog(
+    base_url: String,
+    username: String,
+    password: String,
+) -> Result<opencode::OpenCodeCatalog, String> {
+    opencode::discover_catalog(&base_url, &username, &password).await
+}
 
-    let response = client
-        .get(url)
-        .basic_auth(username, Some(password))
-        .send()
-        .await
-        .map_err(|error| {
-            if error.is_connect() {
-                "No hay un servidor OpenCode escuchando en esa dirección".to_string()
-            } else if error.is_timeout() {
-                "OpenCode tardó demasiado en responder".to_string()
-            } else {
-                format!("No se pudo conectar con OpenCode: {error}")
-            }
-        })?
-        .error_for_status()
-        .map_err(|error| {
-            if error.status() == Some(reqwest::StatusCode::UNAUTHORIZED) {
-                "OpenCode rechazó las credenciales del servidor. Revisa el usuario y la contraseña"
-                    .to_string()
-            } else if error.status() == Some(reqwest::StatusCode::NOT_FOUND) {
-                "No se encontró la API v2 de OpenCode en esa dirección".to_string()
-            } else {
-                format!("OpenCode respondió con un error HTTP: {error}")
-            }
-        })?;
+#[tauri::command]
+async fn start_managed_opencode_server(
+    base_url: String,
+    manager: State<'_, opencode_process::OpenCodeProcessManager>,
+) -> Result<opencode_process::StartedOpenCodeServer, String> {
+    manager.start(&base_url).await
+}
 
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    if !content_type.contains("application/json") {
-        return Err("La dirección respondió contenido web, no la API de OpenCode".to_string());
-    }
+#[tauri::command]
+async fn stop_managed_opencode_server(
+    manager: State<'_, opencode_process::OpenCodeProcessManager>,
+) -> Result<(), String> {
+    manager.stop().await
+}
 
-    let info: OpenCodeInfo = response.json().await.map_err(|error| {
-        format!("La respuesta de OpenCode no tiene el formato esperado: {error}")
-    })?;
+#[tauri::command]
+async fn managed_opencode_server_status(
+    manager: State<'_, opencode_process::OpenCodeProcessManager>,
+) -> Result<opencode_process::OpenCodeProcessStatus, String> {
+    manager.status().await
+}
 
-    Ok(OpenCodeHealth {
-        healthy: true,
-        version: info.version,
-    })
+#[tauri::command]
+async fn list_projects(
+    include_archived: bool,
+    database: State<'_, storage::Database>,
+) -> Result<Vec<projects::Project>, String> {
+    projects::list(&database.pool, include_archived).await
+}
+
+#[tauri::command]
+async fn create_project(
+    name: String,
+    root_path: String,
+    description: Option<String>,
+    database: State<'_, storage::Database>,
+) -> Result<projects::Project, String> {
+    projects::create(&database.pool, name, root_path, description).await
+}
+
+#[tauri::command]
+async fn update_project(
+    project_id: i64,
+    name: String,
+    description: Option<String>,
+    database: State<'_, storage::Database>,
+) -> Result<projects::Project, String> {
+    projects::update(&database.pool, project_id, name, description).await
+}
+
+#[tauri::command]
+async fn set_project_archived(
+    project_id: i64,
+    archived: bool,
+    database: State<'_, storage::Database>,
+) -> Result<projects::Project, String> {
+    projects::set_archived(&database.pool, project_id, archived).await
+}
+
+#[tauri::command]
+async fn list_project_worktrees(
+    project_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<Vec<worktrees::Worktree>, String> {
+    worktrees::list(&database.pool, project_id).await
+}
+
+#[tauri::command]
+async fn create_project_worktree(
+    project_id: i64,
+    label: String,
+    database: State<'_, storage::Database>,
+) -> Result<worktrees::Worktree, String> {
+    worktrees::create(&database.pool, &database.worktrees_root, project_id, label).await
+}
+
+#[tauri::command]
+async fn create_worktree_session(
+    base_url: String,
+    username: String,
+    password: String,
+    worktree_id: i64,
+    agent_id: String,
+    provider_id: String,
+    model_id: String,
+    database: State<'_, storage::Database>,
+) -> Result<worktrees::Worktree, String> {
+    sessions::create_for_worktree(
+        &database.pool,
+        &database.worktrees_root,
+        &base_url,
+        &username,
+        &password,
+        worktree_id,
+        &agent_id,
+        &provider_id,
+        &model_id,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn send_worktree_prompt(
+    base_url: String,
+    username: String,
+    password: String,
+    worktree_id: i64,
+    text: String,
+    database: State<'_, storage::Database>,
+) -> Result<sessions::PromptReceipt, String> {
+    sessions::send_to_worktree(
+        &database.pool,
+        &database.worktrees_root,
+        &base_url,
+        &username,
+        &password,
+        worktree_id,
+        &text,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn refresh_worktree_session(
+    base_url: String,
+    username: String,
+    password: String,
+    worktree_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<opencode::SessionSnapshot, String> {
+    sessions::refresh_worktree_session(
+        &database.pool,
+        &database.worktrees_root,
+        &base_url,
+        &username,
+        &password,
+        worktree_id,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn reply_to_worktree_permission(
+    base_url: String,
+    username: String,
+    password: String,
+    worktree_id: i64,
+    permission_id: String,
+    allow_once: bool,
+    database: State<'_, storage::Database>,
+) -> Result<(), String> {
+    sessions::decide_permission(
+        &database.pool,
+        &database.worktrees_root,
+        &base_url,
+        &username,
+        &password,
+        worktree_id,
+        &permission_id,
+        allow_once,
+    )
+    .await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![check_opencode_connection])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
-}
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            let app_data_dir = app.path().app_data_dir()?;
+            let database = tauri::async_runtime::block_on(storage::connect(app_data_dir))
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            app.manage(database);
+            app.manage(opencode_process::OpenCodeProcessManager::default());
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            check_opencode_connection,
+            discover_opencode_catalog,
+            start_managed_opencode_server,
+            stop_managed_opencode_server,
+            managed_opencode_server_status,
+            list_projects,
+            create_project,
+            update_project,
+            set_project_archived,
+            list_project_worktrees,
+            create_project_worktree,
+            create_worktree_session,
+            send_worktree_prompt,
+            refresh_worktree_session,
+            reply_to_worktree_permission
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
 
-#[cfg(test)]
-mod tests {
-    use super::validate_local_base_url;
-
-    #[test]
-    fn accepts_localhost_and_loopback_addresses() {
-        assert!(validate_local_base_url("http://localhost:4096").is_ok());
-        assert!(validate_local_base_url("http://127.0.0.1:4096").is_ok());
-        assert!(validate_local_base_url("http://[::1]:4096").is_ok());
-    }
-
-    #[test]
-    fn rejects_remote_hosts_and_paths() {
-        assert!(validate_local_base_url("http://example.com:4096").is_err());
-        assert!(validate_local_base_url("http://192.168.1.5:4096").is_err());
-        assert!(validate_local_base_url("http://localhost:4096/api").is_err());
-    }
+    app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            let process_manager = app_handle.state::<opencode_process::OpenCodeProcessManager>();
+            // Tauri exits the process directly after RunEvent::Exit, so explicitly stop
+            // the child here instead of relying on async Child drop during runtime teardown.
+            tauri::async_runtime::block_on(process_manager.shutdown());
+        }
+    });
 }
