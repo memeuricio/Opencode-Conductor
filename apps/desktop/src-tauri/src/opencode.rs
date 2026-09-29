@@ -631,7 +631,7 @@ pub async fn reply_to_permission(
     .await
 }
 
-fn directories_match(expected: &str, actual: &str) -> bool {
+pub(crate) fn directories_match(expected: &str, actual: &str) -> bool {
     let (Ok(expected), Ok(actual)) = (
         std::fs::canonicalize(expected),
         std::fs::canonicalize(actual),

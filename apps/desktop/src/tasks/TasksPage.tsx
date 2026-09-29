@@ -16,10 +16,10 @@ export interface Task {
   id: number;
   projectId: number;
   worktreeId: number | null;
-  roleId: number | null;
   title: string;
   objective: string;
   status: TaskStatus;
+  origin: "user" | "planner";
   agentId: string;
   providerId: string;
   modelId: string;
@@ -115,28 +115,6 @@ interface WorkspaceOption {
   projectIds: number[];
 }
 
-interface RoleOption {
-  id: number;
-  name: string;
-  agentId: string;
-  providerId: string;
-  modelId: string;
-  fallbackProviderId: string | null;
-  fallbackModelId: string | null;
-  fileScope: string;
-}
-
-interface AgentOption {
-  id: string;
-  name: string;
-}
-
-interface ModelOption {
-  id: string;
-  name: string;
-  providerId: string | null;
-}
-
 interface TasksPageProps {
   baseUrl: string;
   username: string;
@@ -145,24 +123,19 @@ interface TasksPageProps {
   managedServer: boolean;
   projects: ProjectOption[];
   workspaces: WorkspaceOption[];
-  roles: RoleOption[];
-  agents: AgentOption[];
-  models: ModelOption[];
-}
-
-interface RoleSuggestion {
-  role: RoleOption;
-  reasons: string[];
+  onConfigureProject: (projectId: number) => void;
 }
 
 interface TaskFormState {
   title: string;
   objective: string;
-  fileScope: string;
-  roleId: string;
+}
+
+interface ProjectAgent {
+  role: "builder";
   agentId: string;
-  modelIndex: string;
-  dependsOnIds: number[];
+  providerId: string;
+  modelId: string;
 }
 
 const STATUS_LABELS: Record<TaskStatus, string> = {
@@ -192,7 +165,6 @@ const ACTIVITY_LABELS: Record<string, string> = {
   dispatched: "Prompt enviado al agente",
   dispatch_failed: "Falló el envío del prompt",
   nudge_sent: "Entrega pedida al agente",
-  fallback_applied: "Modelo alternativo aplicado",
   handoff_submitted: "Entrega registrada por el agente",
   handoff_accepted: "Entrega aceptada",
   handoff_returned: "Entrega devuelta",
@@ -240,27 +212,33 @@ export default function TasksPage({
   managedServer,
   projects,
   workspaces,
-  roles,
-  agents,
-  models,
+  onConfigureProject,
 }: TasksPageProps) {
   const activeProjects = useMemo(
     () => projects.filter((project) => project.archivedAt === null),
     [projects],
   );
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | null>(null);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | "none" | null>(null);
+  const selectedWorkspace = typeof selectedWorkspaceId === "number"
+    ? workspaces.find((entry) => entry.id === selectedWorkspaceId) ?? null
+    : null;
   const visibleProjects = useMemo(() => {
-    if (selectedWorkspaceId === null) return activeProjects;
-    const workspace = workspaces.find((entry) => entry.id === selectedWorkspaceId);
-    if (!workspace) return activeProjects;
-    return activeProjects.filter((project) => workspace.projectIds.includes(project.id));
-  }, [activeProjects, workspaces, selectedWorkspaceId]);
-  const selectedWorkspace = workspaces.find((entry) => entry.id === selectedWorkspaceId) ?? null;
+    if (selectedWorkspaceId === "none") {
+      return activeProjects.filter((project) => !workspaces.some((workspace) => workspace.projectIds.includes(project.id)));
+    }
+    if (selectedWorkspace) return activeProjects.filter((project) => selectedWorkspace.projectIds.includes(project.id));
+    return activeProjects;
+  }, [activeProjects, selectedWorkspaceId, selectedWorkspace, workspaces]);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
+  const projectId = selectedProjectId !== null && visibleProjects.some((project) => project.id === selectedProjectId)
+    ? selectedProjectId
+    : visibleProjects[0]?.id ?? null;
+  const selectedProject = visibleProjects.find((project) => project.id === projectId) ?? null;
   const [tasks, setTasks] = useState<TaskDetail[] | null>(null);
   const [tasksError, setTasksError] = useState<string | null>(null);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [bridge, setBridge] = useState<BridgeInfo | null>(null);
+  const [builderConfigured, setBuilderConfigured] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -269,28 +247,16 @@ export default function TasksPage({
   const [form, setForm] = useState<TaskFormState>(emptyForm());
   const [formError, setFormError] = useState<string | null>(null);
   const [formSaving, setFormSaving] = useState(false);
-  const [suggestions, setSuggestions] = useState<RoleSuggestion[] | null>(null);
-  const [suggesting, setSuggesting] = useState(false);
   const [decisionDrafts, setDecisionDrafts] = useState<Record<number, string>>({});
   const [returnDrafts, setReturnDrafts] = useState<Record<number, string>>({});
   const [closureDrafts, setClosureDrafts] = useState<Record<number, string>>({});
   const [sessionInfo, setSessionInfo] = useState<Record<number, SessionInfo>>({});
   const [sessionCheckingId, setSessionCheckingId] = useState<number | null>(null);
 
-  const projectId = selectedProjectId !== null && visibleProjects.some((project) => project.id === selectedProjectId)
-    ? selectedProjectId
-    : visibleProjects[0]?.id ?? null;
-  const selectedProject = visibleProjects.find((project) => project.id === projectId) ?? null;
-
   function emptyForm(): TaskFormState {
     return {
       title: "",
       objective: "",
-      fileScope: "",
-      roleId: "",
-      agentId: agents[0]?.id ?? "",
-      modelIndex: "0",
-      dependsOnIds: [],
     };
   }
 
@@ -330,10 +296,26 @@ export default function TasksPage({
   useEffect(() => {
     if (projectId === null) {
       setTasks(null);
+      setBuilderConfigured(false);
       return;
     }
     void refreshTasks(projectId);
   }, [projectId, refreshTasks]);
+
+  useEffect(() => {
+    if (projectId === null) {
+      setBuilderConfigured(false);
+      return;
+    }
+    let disposed = false;
+    setBuilderConfigured(false);
+    void invoke<ProjectAgent[]>("list_project_agents", { projectId })
+      .then((assignments) => {
+        if (!disposed) setBuilderConfigured(assignments.some((assignment) => assignment.role === "builder"));
+      })
+      .catch(() => { if (!disposed) setBuilderConfigured(false); });
+    return () => { disposed = true; };
+  }, [projectId]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -356,85 +338,41 @@ export default function TasksPage({
 
   const orderedTasks = useMemo(() => {
     if (!tasks) return null;
-    return [...tasks].sort((left, right) => {
+    const visible = projectId === null
+      ? tasks
+      : tasks.filter((detail) => detail.task.projectId === projectId);
+    return [...visible].sort((left, right) => {
       const order = STATUS_ORDER.indexOf(left.task.status) - STATUS_ORDER.indexOf(right.task.status);
       return order !== 0 ? order : left.task.id - right.task.id;
     });
-  }, [tasks]);
+  }, [tasks, projectId]);
 
   const counts = useMemo(() => {
     const result: Partial<Record<TaskStatus, number>> = {};
-    for (const detail of tasks ?? []) {
+    for (const detail of orderedTasks ?? []) {
       result[detail.task.status] = (result[detail.task.status] ?? 0) + 1;
     }
     return result;
-  }, [tasks]);
+  }, [orderedTasks]);
 
   const readyCount = counts.ready ?? 0;
   const openRequestCount =
     (counts.blocked ?? 0) + (counts.review ?? 0);
 
-  function applyRole(roleId: string) {
-    const role = roles.find((entry) => entry.id === Number(roleId));
-    if (!role) {
-      patchForm({ roleId: "" });
-      return;
-    }
-    const modelIndex = models.findIndex(
-      (model) => model.providerId === role.providerId && model.id === role.modelId,
-    );
-    patchForm({
-      roleId,
-      agentId: role.agentId,
-      modelIndex: modelIndex >= 0 ? String(modelIndex) : "0",
-      fileScope: role.fileScope,
-    });
-  }
-
-  async function suggestRoles() {
-    setSuggesting(true);
-    setActionError(null);
-    try {
-      const raw = await invoke<{ role: RoleOption; reasons: string[] }[]>("recommend_roles", {
-        title: form.title,
-        objective: form.objective,
-        fileScope: form.fileScope,
-      });
-      setSuggestions(raw);
-      if (raw.length === 0) {
-        setActionNotice("Ningún rol encaja con este borrador; elige uno a mano o ajusta las palabras clave del rol.");
-      }
-    } catch (error) {
-      setActionError(String(error));
-    } finally {
-      setSuggesting(false);
-    }
-  }
-
   function openCreateDialog() {
     setEditingTask(null);
     setForm(emptyForm());
     setFormError(null);
-    setSuggestions(null);
     setDialogOpen(true);
   }
 
   function openEditDialog(task: Task) {
-    const modelIndex = models.findIndex(
-      (model) => model.providerId === task.providerId && model.id === task.modelId,
-    );
     setEditingTask(task);
     setForm({
       title: task.title,
       objective: task.objective,
-      fileScope: task.fileScope,
-      roleId: task.roleId === null ? "" : String(task.roleId),
-      agentId: task.agentId,
-      modelIndex: modelIndex >= 0 ? String(modelIndex) : "0",
-      dependsOnIds: [],
     });
     setFormError(null);
-    setSuggestions(null);
     setDialogOpen(true);
   }
 
@@ -449,24 +387,16 @@ export default function TasksPage({
           taskId: editingTask.id,
           title: form.title,
           objective: form.objective,
-          fileScope: form.fileScope,
+          fileScope: editingTask.fileScope,
         });
         setActionNotice(`Tarea #${editingTask.id} actualizada.`);
       } else {
-        const model = models[Number(form.modelIndex)];
-        if (!model?.providerId || !form.agentId) {
-          throw new Error("Selecciona un perfil y un modelo disponibles.");
-        }
         const created = await invoke<Task>("create_task", {
           projectId,
           title: form.title,
           objective: form.objective,
-          agentId: form.agentId,
-          providerId: model.providerId,
-          modelId: model.id,
-          fileScope: form.fileScope,
-          dependsOnIds: form.dependsOnIds,
-          roleId: form.roleId === "" ? null : Number(form.roleId),
+          fileScope: "",
+          dependsOnIds: [],
         });
         setActionNotice(`Tarea #${created.id} añadida al plan.`);
       }
@@ -496,12 +426,7 @@ export default function TasksPage({
     }
   }
 
-  function startTask(task: Task, allowScopeConflicts: boolean, useFallback = false) {
-    if (useFallback) {
-      const role = roles.find((entry) => entry.id === task.roleId);
-      const label = role?.fallbackModelId ? `${role.fallbackProviderId}/${role.fallbackModelId}` : "el modelo alternativo";
-      if (!window.confirm(`¿Lanzar la tarea #${task.id} con ${label}? Cambia el modelo de la tarea antes de crear su sesión.`)) return Promise.resolve();
-    }
+  function startTask(task: Task, allowScopeConflicts: boolean) {
     return runAction(`start-${task.id}`, async () => {
       await invoke("start_task", {
         baseUrl,
@@ -509,16 +434,13 @@ export default function TasksPage({
         password,
         taskId: task.id,
         allowScopeConflicts,
-        useFallback,
       });
-      return useFallback
-        ? `Tarea #${task.id} enviada con el modelo alternativo.`
-        : `Tarea #${task.id} enviada a su agente.`;
+      return `Tarea #${task.id} enviada al Builder.`;
     });
   }
 
   function startReadyTasks() {
-    if (projectId === null) return;
+    if (projectId === null) return startReadyWorkspaceTasks();
     return runAction(`start-ready-${projectId}`, async () => {
       const outcomes = await invoke<DispatchOutcome[]>("start_ready_project_tasks", {
         baseUrl,
@@ -542,8 +464,8 @@ export default function TasksPage({
   }
 
   function startReadyWorkspaceTasks() {
-    if (selectedWorkspaceId === null) return;
-    if (!window.confirm(`¿Lanzar las tareas listas de todos los proyectos del espacio «${selectedWorkspace?.name}»? Puede arrancar varios agentes a la vez.`)) return;
+    if (typeof selectedWorkspaceId !== "number") return;
+    if (!window.confirm(`¿Lanzar las tareas listas de todos los proyectos del espacio «${selectedWorkspace?.name}»? Puede iniciar varios Builders a la vez.`)) return;
     return runAction(`start-ready-workspace-${selectedWorkspaceId}`, async () => {
       const outcomes = await invoke<DispatchOutcome[]>("start_ready_workspace_tasks", {
         baseUrl,
@@ -578,7 +500,7 @@ export default function TasksPage({
         });
         const launched = outcomes.filter((outcome) => outcome.ok);
         return launched.length > 0
-          ? `Entrega aceptada y ${launched.length} ${launched.length === 1 ? "tarea dependiente lanzada" : "tareas dependientes lanzadas"}.`
+          ? `Entrega aceptada y ${launched.length} ${launched.length === 1 ? "tarea lista lanzada" : "tareas listas lanzadas"}.`
           : "Entrega aceptada. No quedan tareas listas por lanzar.";
       }
       return "Entrega aceptada.";
@@ -714,13 +636,10 @@ export default function TasksPage({
         <div>
           <p className="eyebrow">COORDINACIÓN DURABLE</p>
           <h1>Tareas</h1>
-          <p className="page-description">
-            Planifica tareas dependientes, lánzalas en su propio worktree y revisa cada entrega antes de
-            desbloquear al siguiente agente.
-          </p>
+          <p className="page-description">Añade tareas para el Builder del proyecto y revisa sus entregas.</p>
         </div>
         <div className="tasks-heading-actions">
-          <button className="primary-button" type="button" onClick={openCreateDialog} disabled={projectId === null || !connected}>
+            <button className="primary-button" type="button" onClick={openCreateDialog} disabled={projectId === null || !connected || !builderConfigured}>
             <span aria-hidden="true">＋</span> Nueva tarea
           </button>
         </div>
@@ -728,24 +647,21 @@ export default function TasksPage({
 
       <div className="tasks-toolbar panel">
         <div className="tasks-toolbar-row">
-          {workspaces.length > 0 && (
-            <label className="tasks-project-select">
-              <span>Espacio</span>
-              <select
-                value={selectedWorkspaceId ?? ""}
-                onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setSelectedWorkspaceId(value === "" ? null : Number(value));
-                  setSelectedProjectId(null);
-                }}
-              >
-                <option value="">Todos los proyectos</option>
-                {workspaces.map((workspace) => (
-                  <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-                ))}
-              </select>
-            </label>
-          )}
+          <label className="tasks-project-select">
+            <span>Espacio</span>
+            <select
+              value={selectedWorkspaceId === null ? "" : selectedWorkspaceId === "none" ? "none" : String(selectedWorkspaceId)}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setSelectedWorkspaceId(value === "" ? null : value === "none" ? "none" : Number(value));
+                setSelectedProjectId(null);
+              }}
+            >
+              <option value="">Todos los espacios</option>
+              <option value="none">Sin espacio</option>
+              {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+            </select>
+          </label>
           <label className="tasks-project-select">
             <span>Proyecto{selectedWorkspace ? ` · ${selectedWorkspace.name}` : ""}</span>
             <select
@@ -756,7 +672,7 @@ export default function TasksPage({
               }}
               disabled={visibleProjects.length === 0}
             >
-              {visibleProjects.length === 0 && <option value="">Sin proyectos en este espacio</option>}
+              {visibleProjects.length === 0 && <option value="">Sin proyectos en este filtro</option>}
               {visibleProjects.map((project) => (
                 <option key={project.id} value={project.id}>{project.name}</option>
               ))}
@@ -767,18 +683,12 @@ export default function TasksPage({
               className="primary-button"
               type="button"
               onClick={() => void startReadyTasks()}
-              disabled={!canDispatch || readyCount === 0 || busyKey === `start-ready-${projectId}`}
+              disabled={!canDispatch || readyCount === 0 || projectId === null || busyKey === `start-ready-${projectId}`}
             >
               {busyKey === `start-ready-${projectId}` ? "Lanzando…" : `Lanzar tareas listas${readyCount ? ` (${readyCount})` : ""}`}
             </button>
-            {selectedWorkspaceId !== null && (
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => void startReadyWorkspaceTasks()}
-                disabled={!canDispatch || busyKey === `start-ready-workspace-${selectedWorkspaceId}`}
-                title="Lanza las tareas listas de todos los proyectos del espacio"
-              >
+            {typeof selectedWorkspaceId === "number" && (
+              <button className="secondary-button" type="button" onClick={() => void startReadyWorkspaceTasks()} disabled={!canDispatch || busyKey === `start-ready-workspace-${selectedWorkspaceId}`}>
                 {busyKey === `start-ready-workspace-${selectedWorkspaceId}` ? "Lanzando espacio…" : "Lanzar espacio"}
               </button>
             )}
@@ -792,37 +702,25 @@ export default function TasksPage({
             </button>
           </div>
         </div>
-        <div className="tasks-bridge-row">
-          <span className={`tasks-bridge-badge ${bridge?.ready ? "bridge-ready" : "bridge-missing"}`}>
-            {bridge?.ready ? "PUENTE MCP ACTIVO" : "PUENTE MCP NO DISPONIBLE"}
-          </span>
-          {bridge?.url && <code>{bridge.url}</code>}
-          <span className="tasks-bridge-note">
-            Las herramientas de coordinación viajan por loopback con un token por ejecución; la
-            configuración se escribe junto a los worktrees del proyecto, nunca en tu repositorio.
-          </span>
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={() => void refreshBridgeConfig()}
-            disabled={projectId === null || busyKey === `bridge-${projectId}`}
-          >
-            {busyKey === `bridge-${projectId}` ? "Escribiendo…" : "Regenerar configuración"}
-          </button>
-        </div>
+        <details className="tasks-advanced-status">
+          <summary><span className={`tasks-bridge-badge ${bridge?.ready ? "bridge-ready" : "bridge-missing"}`}>{bridge?.ready ? "Coordinación lista" : "Coordinación no disponible"}</span></summary>
+          <div className="tasks-bridge-row">
+            {bridge?.url && <code>{bridge.url}</code>}
+            <span className="tasks-bridge-note">Coordinación MCP local autenticada; la configuración queda fuera del repositorio.</span>
+            <button className="secondary-button" type="button" onClick={() => void refreshBridgeConfig()} disabled={projectId === null || busyKey === `bridge-${projectId}`}>
+              {busyKey === `bridge-${projectId}` ? "Reparando…" : "Reparar coordinación del proyecto"}
+            </button>
+          </div>
+        </details>
         {!connected && <p className="tasks-inline-warning">Conecta OpenCode para lanzar tareas y responder a los agentes.</p>}
+        {!builderConfigured && projectId !== null && <p className="tasks-inline-warning">Configura un Builder en el proyecto antes de crear tareas. <button className="project-action-button" type="button" onClick={() => onConfigureProject(projectId)}>Configurar Builder</button></p>}
         {connected && !managedServer && (
-          <p className="tasks-inline-warning">
-            Conectado a un servidor que no inició la app: el agente solo ve las herramientas de
-            coordinación (<code>stade_*</code>) si el servidor las cargó al arrancar. Si la tarea
-            queda colgada al terminar, reinicia el servidor o usa <strong>Regenerar configuración</strong> y
-            vuelve a lanzar. También puedes cerrar la tarea a mano desde su tarjeta.
-          </p>
+          <p className="tasks-inline-warning">Si OpenCode no carga las herramientas de coordinación, reinicia el servidor externo.</p>
         )}
         {!bridge?.ready && bridge?.message && <p className="tasks-inline-warning">{bridge.message}</p>}
         {selectedProject && !selectedProject.isGitRepository && (
           <p className="tasks-inline-warning">
-            Este proyecto no es un repositorio Git; para lanzar una tarea se necesita un worktree aislado.
+            Este proyecto no es un repositorio Git; para ejecutar tareas el Builder necesita Git.
           </p>
         )}
       </div>
@@ -835,7 +733,7 @@ export default function TasksPage({
         <div className="project-empty-state tasks-empty">
           <span className="empty-folder-icon" aria-hidden="true">▱</span>
           <h2>Sin proyectos activos</h2>
-          <p>Registra un proyecto con repositorio Git para planificar tareas.</p>
+          <p>Registra una carpeta de proyecto para empezar.</p>
         </div>
       ) : tasksLoading && tasks === null ? (
         <div className="project-empty-state tasks-empty">Cargando el plan…</div>
@@ -843,8 +741,8 @@ export default function TasksPage({
         <div className="project-empty-state tasks-empty">
           <span className="empty-folder-icon" aria-hidden="true">▱</span>
           <h2>El plan está vacío</h2>
-          <p>Crea la primera tarea, asígnale un perfil y un modelo, y añade dependencias si las necesita.</p>
-          <button className="secondary-button" type="button" onClick={openCreateDialog} disabled={!connected}>
+          <p>Añade una tarea manual para el Builder del proyecto.</p>
+          <button className="secondary-button" type="button" onClick={openCreateDialog} disabled={!connected || !builderConfigured}>
             Crear primera tarea
           </button>
         </div>
@@ -854,6 +752,7 @@ export default function TasksPage({
             <TaskCard
               key={detail.task.id}
               detail={detail}
+              projectName={projects.find((project) => project.id === detail.task.projectId)?.name ?? "Proyecto"}
               connected={connected}
               canDispatch={canDispatch}
               busyKey={busyKey}
@@ -876,13 +775,6 @@ export default function TasksPage({
               sessionSnapshot={sessionInfo[detail.task.id] ?? null}
               sessionChecking={sessionCheckingId === detail.task.id}
               onEdit={openEditDialog}
-              roleName={roles.find((role) => role.id === detail.task.roleId)?.name ?? null}
-              fallbackLabel={(() => {
-                const role = roles.find((entry) => entry.id === detail.task.roleId);
-                return role?.fallbackModelId && role.fallbackProviderId
-                  ? `${role.fallbackProviderId}/${role.fallbackModelId}`
-                  : null;
-              })()}
             />
           ))}
         </div>
@@ -924,130 +816,15 @@ export default function TasksPage({
                 maxLength={8000}
                 required
               />
-              <label htmlFor="task-scope">Ámbito de archivos <span>opcional, una ruta o patrón por línea</span></label>
-              <textarea
-                id="task-scope"
-                value={form.fileScope}
-                onChange={(event) => patchForm({ fileScope: event.currentTarget.value })}
-                placeholder={"apps/desktop/src-tauri/src/opencode.rs\napps/desktop/src-tauri/src/opencode/*.rs"}
-                rows={3}
-                maxLength={4000}
-              />
-              {!editingTask && (
-                <>
-                  <label htmlFor="task-role">Rol <span>propone perfil, modelo y ámbito; puedes ajustarlos</span></label>
-                  <div className="task-form-row">
-                    <select
-                      id="task-role"
-                      value={form.roleId}
-                      onChange={(event) => applyRole(event.currentTarget.value)}
-                      disabled={roles.length === 0}
-                    >
-                      <option value="">Sin rol (manual)</option>
-                      {roles.map((role) => (
-                        <option key={role.id} value={role.id}>{role.name}</option>
-                      ))}
-                    </select>
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      onClick={() => void suggestRoles()}
-                      disabled={suggesting || (!form.title.trim() && !form.objective.trim() && !form.fileScope.trim())}
-                      title="Sugiere un rol según el título, el objetivo y el ámbito"
-                    >
-                      {suggesting ? "Buscando…" : "Sugerir rol"}
-                    </button>
-                  </div>
-                  {roles.length === 0 && (
-                    <p className="project-form-hint">Crea roles en la página Roles para autocompletar perfil, modelo y ámbito.</p>
-                  )}
-                  {suggestions !== null && suggestions.length > 0 && (
-                    <div className="role-suggestion" role="status">
-                      <p>
-                        Sugerencia: <strong>{suggestions[0].role.name}</strong> — se basa en coincidencias
-                        configuradas, no en una puntuación de calidad. Puedes aplicarla o elegir otro rol.
-                      </p>
-                      <ul>
-                        {suggestions[0].reasons.map((reason) => <li key={reason}>{reason}</li>)}
-                      </ul>
-                      <div className="role-suggestion-actions">
-                        <button className="secondary-button" type="button" onClick={() => applyRole(String(suggestions[0].role.id))}>
-                          Aplicar {suggestions[0].role.name}
-                        </button>
-                        {suggestions.slice(1).map((suggestion) => (
-                          <button
-                            key={suggestion.role.id}
-                            className="project-action-button"
-                            type="button"
-                            onClick={() => applyRole(String(suggestion.role.id))}
-                          >
-                            {suggestion.role.name}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  <label htmlFor="task-agent">Perfil y modelo</label>
-                  <div className="task-form-row">
-                    <select
-                      id="task-agent"
-                      value={form.agentId}
-                      onChange={(event) => patchForm({ agentId: event.currentTarget.value })}
-                      required
-                    >
-                      {agents.length === 0 && <option value="">Sin perfiles disponibles</option>}
-                      {agents.map((agent) => (
-                        <option key={agent.id} value={agent.id}>{agent.name}</option>
-                      ))}
-                    </select>
-                    <select
-                      value={form.modelIndex}
-                      onChange={(event) => patchForm({ modelIndex: event.currentTarget.value })}
-                      required
-                    >
-                      {models.length === 0 && <option value="0">Sin modelos disponibles</option>}
-                      {models.map((model, index) => (
-                        <option key={`${model.providerId}/${model.id}`} value={index}>
-                          {model.name} · {model.providerId}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <label>Dependencias <span>la tarea espera a que se acepten sus entregas</span></label>
-                  <div className="task-dependency-picker">
-                    {(tasks ?? []).length === 0 && <p className="task-dependency-empty">Aún no hay otras tareas en este proyecto.</p>}
-                    {(tasks ?? []).map((detail) => (
-                      <label key={detail.task.id} className="task-dependency-option">
-                        <input
-                          type="checkbox"
-                          checked={form.dependsOnIds.includes(detail.task.id)}
-                          onChange={(event) => {
-                            const checked = event.currentTarget.checked;
-                            setForm((current) => ({
-                              ...current,
-                              dependsOnIds: checked
-                                ? [...current.dependsOnIds, detail.task.id]
-                                : current.dependsOnIds.filter((id) => id !== detail.task.id),
-                            }));
-                          }}
-                        />
-                        <span>#{detail.task.id} · {detail.task.title}</span>
-                        <span className={`task-status status-${detail.task.status}`}>{STATUS_LABELS[detail.task.status]}</span>
-                      </label>
-                    ))}
-                  </div>
-                </>
-              )}
               <p className="project-form-hint">
-                La app no guarda el texto del prompt: solo el objetivo, la entrega y las decisiones, para que
-                el siguiente agente reciba el contexto.
+                La tarea se asigna automáticamente al Builder configurado para este proyecto.
               </p>
               {formError && <p className="project-form-error">{formError}</p>}
               <div className="project-form-actions">
                 <button className="secondary-button" type="button" onClick={() => setDialogOpen(false)} disabled={formSaving}>
                   Cancelar
                 </button>
-                <button className="primary-button" type="submit" disabled={formSaving || agents.length === 0 || models.length === 0}>
+                <button className="primary-button" type="submit" disabled={formSaving || !builderConfigured}>
                   {formSaving ? "Guardando…" : editingTask ? "Guardar cambios" : "Añadir tarea"}
                 </button>
               </div>
@@ -1061,6 +838,7 @@ export default function TasksPage({
 
 interface TaskCardProps {
   detail: TaskDetail;
+  projectName: string;
   connected: boolean;
   canDispatch: boolean;
   busyKey: string | null;
@@ -1070,7 +848,7 @@ interface TaskCardProps {
   onDecisionDraft: (id: number, value: string) => void;
   onReturnDraft: (id: number, value: string) => void;
   onClosureDraft: (id: number, value: string) => void;
-  onStart: (task: Task, allowScopeConflicts: boolean, useFallback: boolean) => Promise<void>;
+  onStart: (task: Task, allowScopeConflicts: boolean) => Promise<void>;
   onAccept: (handoff: Handoff, andContinue: boolean) => Promise<void>;
   onReturn: (handoff: Handoff) => Promise<void>;
   onAnswer: (decision: UserDecision) => Promise<void>;
@@ -1083,12 +861,11 @@ interface TaskCardProps {
   sessionSnapshot: SessionInfo | null;
   sessionChecking: boolean;
   onEdit: (task: Task) => void;
-  roleName: string | null;
-  fallbackLabel: string | null;
 }
 
 function TaskCard({
   detail,
+  projectName,
   connected,
   canDispatch,
   busyKey,
@@ -1111,8 +888,6 @@ function TaskCard({
   sessionSnapshot,
   sessionChecking,
   onEdit,
-  roleName,
-  fallbackLabel,
 }: TaskCardProps) {
   const { task } = detail;
   const pendingHandoff = latestPendingHandoff(detail);
@@ -1122,14 +897,14 @@ function TaskCard({
   const closuresEditable = ["working", "blocked", "review", "failed"].includes(task.status);
   const closureDraft = closureDrafts[task.id] ?? "";
 
-  function requestStart(useFallback = false) {
+  function requestStart() {
     if (detail.scopeConflicts.length === 0) {
-      void onStart(task, false, useFallback);
+      void onStart(task, false);
       return;
     }
     const titles = detail.scopeConflicts.map((conflict) => `#${conflict.id} «${conflict.title}»`).join(", ");
     if (window.confirm(`El ámbito de archivos se solapa con ${titles}. ¿Lanzar de todos modos?`)) {
-      void onStart(task, true, useFallback);
+      void onStart(task, true);
     }
   }
 
@@ -1148,58 +923,34 @@ function TaskCard({
             <button
               className="primary-button"
               type="button"
-              onClick={() => requestStart(false)}
+              onClick={requestStart}
               disabled={!canDispatch || busyKey === `start-${task.id}`}
             >
               {busyKey === `start-${task.id}` ? "Lanzando…" : "Lanzar"}
             </button>
           )}
-          {(task.status === "ready" || task.status === "pending") && fallbackLabel && (
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => requestStart(true)}
-              disabled={!canDispatch || busyKey === `start-${task.id}`}
-              title={`Lanza con el modelo alternativo del rol (${fallbackLabel})`}
-            >
-              Con alternativo
-            </button>
-          )}
           {task.status === "pending" && (
             <span className="task-waiting-note">Espera entregas aceptadas de sus dependencias</span>
           )}
-          {["working", "blocked", "review"].includes(task.status) && (
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => void onNudge(task)}
-              disabled={!canDispatch || busyKey === `nudge-${task.id}`}
-              title="Envía un mensaje a la sesión para que commitee y registre su entrega"
-            >
-              {busyKey === `nudge-${task.id}` ? "Pidiendo…" : "Pedir entrega"}
-            </button>
-          )}
-          {["working", "blocked", "review"].includes(task.status) && task.worktreeId !== null && (
-            <button
-              className="project-action-button"
-              type="button"
-              onClick={() => onCheckSession(task)}
-              disabled={!connected || sessionChecking}
-              title="Consulta si la sesión sigue activa y cuál fue su última respuesta"
-            >
-              {sessionChecking ? "Consultando…" : "Consultar sesión"}
-            </button>
-          )}
-          {["working", "blocked", "review", "ready", "pending"].includes(task.status) && task.worktreeId !== null && (
-            <button
-              className="project-action-button"
-              type="button"
-              onClick={() => onCheckTools(task)}
-              disabled={!connected || busyKey === `mcp-${task.id}`}
-              title="Comprueba si OpenCode cargó las herramientas stade_* para este entorno"
-            >
-              {busyKey === `mcp-${task.id}` ? "Comprobando…" : "Verificar herramientas"}
-            </button>
+          {task.worktreeId !== null && ["working", "blocked", "review", "ready", "pending"].includes(task.status) && (
+            <details className="task-diagnostics">
+              <summary>Avanzado</summary>
+              <div>
+                {["working", "blocked", "review"].includes(task.status) && (
+                  <button className="secondary-button" type="button" onClick={() => void onNudge(task)} disabled={!canDispatch || busyKey === `nudge-${task.id}`}>
+                    {busyKey === `nudge-${task.id}` ? "Pidiendo…" : "Pedir entrega"}
+                  </button>
+                )}
+                {["working", "blocked", "review"].includes(task.status) && (
+                  <button className="project-action-button" type="button" onClick={() => onCheckSession(task)} disabled={!connected || sessionChecking}>
+                    {sessionChecking ? "Consultando…" : "Consultar sesión"}
+                  </button>
+                )}
+                <button className="project-action-button" type="button" onClick={() => onCheckTools(task)} disabled={!connected || busyKey === `mcp-${task.id}`}>
+                  {busyKey === `mcp-${task.id}` ? "Comprobando…" : "Verificar herramientas"}
+                </button>
+              </div>
+            </details>
           )}
           {["pending", "ready", "failed"].includes(task.status) && (
             <button className="project-action-button" type="button" onClick={() => onEdit(task)}>Editar</button>
@@ -1215,9 +966,8 @@ function TaskCard({
       <p className="task-objective">{task.objective}</p>
 
       <div className="task-meta-row">
-        <span className="task-meta-chip">{task.agentId} · {task.providerId}/{task.modelId}</span>
-        {roleName && <span className="task-meta-chip">Rol: {roleName}</span>}
-        {task.worktreeId && <span className="task-meta-chip">Worktree #{task.worktreeId}</span>}
+        <span className="task-meta-chip">{projectName}</span>
+        <span className="task-meta-chip">{task.origin === "planner" ? "Plan anterior" : "Añadida por ti"}</span>
         {task.fileScope.trim() !== "" && <span className="task-meta-chip scope-chip" title={task.fileScope}>Ámbito: {task.fileScope.split("\n")[0]}{task.fileScope.split("\n").length > 1 ? "…" : ""}</span>}
       </div>
 
@@ -1336,7 +1086,7 @@ function TaskCard({
             </div>
           )}
           {pendingHandoff.nextInstructions && (
-            <p className="task-handoff-instructions">Instrucciones para el siguiente rol: {pendingHandoff.nextInstructions}</p>
+            <p className="task-handoff-instructions">Para la siguiente tarea: {pendingHandoff.nextInstructions}</p>
           )}
           {pendingHandoff.openQuestions.length > 0 && (
             <ul className="task-handoff-questions">

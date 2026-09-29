@@ -25,7 +25,15 @@ pub fn write_project_bridge_config(
     project_id: i64,
     bridge: &Bridge,
 ) -> Result<(), String> {
-    let directory = worktrees_root.join(format!("project-{project_id}"));
+    write_bridge_config(worktrees_root, &format!("project-{project_id}"), bridge)
+}
+
+fn write_bridge_config(
+    worktrees_root: &Path,
+    directory_name: &str,
+    bridge: &Bridge,
+) -> Result<(), String> {
+    let directory = worktrees_root.join(directory_name);
     std::fs::create_dir_all(&directory)
         .map_err(|_| "No se pudo preparar la configuración del puente local".to_string())?;
     let config = serde_json::json!({
@@ -59,13 +67,7 @@ pub async fn start_task(
     bridge: &Bridge,
     task_id: i64,
     allow_scope_conflicts: bool,
-    use_fallback: bool,
 ) -> Result<coordination::Task, String> {
-    // El modelo alternativo solo se aplica por decisión explícita del usuario,
-    // nunca automáticamente. Solo afecta a la creación de la sesión.
-    if use_fallback {
-        coordination::apply_role_fallback(pool, task_id).await?;
-    }
     let task = coordination::get(pool, task_id).await?;
     match task.status.as_str() {
         coordination::STATUS_READY => {}
@@ -205,14 +207,19 @@ pub async fn start_task(
 
     // 4. Prompt con el contexto durable de las dependencias.
     let context = coordination::accepted_dependency_context(pool, task_id).await?;
-    let role_instructions = match task.role_id {
-        Some(role_id) => crate::roles::get(pool, role_id)
-            .await
-            .ok()
-            .and_then(|role| role.instructions.clone()),
+    let mut instructions =
+        crate::agents::profile_instructions(pool, crate::agents::BUILDER).await?;
+    let legacy_role_instructions = match task.role_id {
+        Some(role_id) => crate::roles::legacy_instructions(pool, role_id).await?,
         None => None,
     };
-    let prompt = build_task_prompt(&task, &context, role_instructions.as_deref())?;
+    if let Some(legacy) = legacy_role_instructions.filter(|value| !value.trim().is_empty()) {
+        if !instructions.trim().is_empty() {
+            instructions.push_str("\n\n");
+        }
+        instructions.push_str(&legacy);
+    }
+    let prompt = build_task_prompt(&task, &context, Some(&instructions))?;
 
     if let Err(error) =
         opencode::send_session_prompt(base_url, username, password, &session_id, &prompt).await
@@ -260,7 +267,6 @@ pub async fn start_ready_tasks(
             password,
             bridge,
             task_id,
-            false,
             false,
         )
         .await;
@@ -337,7 +343,7 @@ pub async fn nudge_task(
         &task,
         "El usuario te pide un avance de la tarea: guarda tu trabajo con un commit dentro de este \
          worktree y registra la entrega con la herramienta submit_handoff (resumen, artefactos e \
-         instrucciones para el siguiente rol) o cierra con complete_task si no dejas trabajo pendiente. \
+         instrucciones útiles para la siguiente tarea) o cierra con complete_task si no dejas trabajo pendiente. \
          Sin esa llamada el coordinador no sabe que terminaste.",
     )
     .await?;
@@ -419,17 +425,19 @@ async fn send_to_task_session(
 pub fn build_task_prompt(
     task: &coordination::Task,
     context: &[(coordination::Task, coordination::HandoffRecord)],
-    role_instructions: Option<&str>,
+    agent_instructions: Option<&str>,
 ) -> Result<String, String> {
     let mut prompt = String::new();
     prompt.push_str("Tarea coordinada por Stade Studio.\n\n");
     prompt.push_str(&format!("Tarea #{} — «{}»\n", task.id, task.title));
     prompt.push_str(&format!("Objetivo:\n{}\n", task.objective.trim()));
-    if let Some(instructions) = role_instructions
+    if let Some(instructions) = agent_instructions
         .map(str::trim)
         .filter(|text| !text.is_empty())
     {
-        prompt.push_str(&format!("\nInstrucciones de tu rol:\n{instructions}\n"));
+        prompt.push_str(&format!(
+            "\nInstrucciones base del Builder:\n{instructions}\n"
+        ));
     }
     prompt.push_str(&format!(
         "\nÁmbito de archivos declarado: {}\n",
@@ -486,8 +494,8 @@ pub fn build_task_prompt(
     prompt.push_str(
         "\nHerramientas de coordinación disponibles (servidor MCP «stade»):\n\
          - get_task_context: consulta el estado y el contexto de esta tarea.\n\
-         - submit_handoff: entrega el trabajo con resumen, artefactos e instrucciones para el siguiente rol.\n\
-         - complete_task: marca la tarea como terminada si no dejas trabajo para otro rol.\n\
+         - submit_handoff: entrega el trabajo con resumen, artefactos e instrucciones útiles para la siguiente tarea.\n\
+         - complete_task: marca la tarea como terminada si no dejas trabajo pendiente para otras tareas.\n\
          - report_blocker: registra un bloqueo técnico.\n\
          - request_user_input: pide una decisión al usuario y espera su respuesta.\n\
          \nAl terminar, usa OBLIGATORIAMENTE la herramienta de entrega correspondiente (submit_handoff o complete_task) y detén el trabajo: sin esa llamada el coordinador no sabe que terminaste y la tarea queda colgada. El usuario revisa la entrega antes de continuar.\n",
@@ -516,6 +524,7 @@ mod tests {
             title: "Construir la API".to_string(),
             objective: "Exponer el contrato aprobado".to_string(),
             status: coordination::STATUS_READY.to_string(),
+            origin: "user".to_string(),
             agent_id: "build".to_string(),
             provider_id: "openai".to_string(),
             model_id: "gpt-test".to_string(),
@@ -565,11 +574,11 @@ mod tests {
     }
 
     #[test]
-    fn prompt_includes_role_instructions_when_present() {
+    fn prompt_includes_builder_instructions_when_present() {
         let task = sample_task();
         let prompt = build_task_prompt(&task, &[], Some("Sigue el contrato aprobado"))
             .expect("prompt should build");
-        assert!(prompt.contains("Instrucciones de tu rol"));
+        assert!(prompt.contains("Instrucciones base del Builder"));
         assert!(prompt.contains("Sigue el contrato aprobado"));
     }
 

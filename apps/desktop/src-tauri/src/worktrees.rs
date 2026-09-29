@@ -239,6 +239,104 @@ pub fn validate_managed_directory(worktrees_root: &Path, directory: &str) -> Res
     Ok(())
 }
 
+/// Removes only clean Git worktrees for a project. Branches and the registered
+/// project folder are deliberately retained so committed work remains
+/// recoverable. Any uncommitted content blocks project deletion.
+pub async fn remove_clean_for_project(
+    pool: &SqlitePool,
+    worktrees_root: &Path,
+    project_root: &Path,
+    project_id: i64,
+) -> Result<(), String> {
+    let directories = sqlx::query_as::<_, (String,)>(
+        "SELECT directory FROM worktrees WHERE project_id = ? ORDER BY id",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| "No se pudieron consultar los entornos del proyecto".to_string())?;
+
+    let mut existing = Vec::new();
+    for (directory,) in directories {
+        if !Path::new(&directory).exists() {
+            continue;
+        }
+        validate_managed_directory(worktrees_root, &directory)?;
+        existing.push(PathBuf::from(directory));
+    }
+    if existing.is_empty() {
+        return Ok(());
+    }
+
+    let canonical_project = std::fs::canonicalize(project_root).map_err(|_| {
+        "No se puede comprobar Git: la carpeta del proyecto ya no está disponible".to_string()
+    })?;
+    let root_for_remove = canonical_project.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Preflight every environment before removing any of them.
+        for directory in &existing {
+            let status = run_git(directory, &["status", "--porcelain", "--untracked-files=normal"])?;
+            if !status.status.success() {
+                return Err("Git no pudo comprobar uno de los entornos; no se eliminó el proyecto".to_string());
+            }
+            if !status.stdout.is_empty() {
+                return Err("Hay cambios sin guardar en un entorno del proyecto. Guarda o integra esos cambios antes de eliminarlo".to_string());
+            }
+        }
+
+        for directory in &existing {
+            let directory = directory.to_string_lossy().into_owned();
+            let removed = run_git(
+                &root_for_remove,
+                &["worktree", "remove", directory.as_str()],
+            )?;
+            if !removed.status.success() {
+                return Err("Git no pudo retirar un entorno limpio; no se eliminó el registro del proyecto".to_string());
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|_| "No se pudo terminar la limpieza segura de los entornos".to_string())?
+}
+
+/// Deletes only the generated MCP config and empty managed folders. It never
+/// recursively removes a planner directory that may contain user/agent files.
+pub fn remove_project_config(worktrees_root: &Path, project_id: i64) -> Result<(), String> {
+    let project_directory = worktrees_root.join(format!("project-{project_id}"));
+    if !project_directory.exists() {
+        return Ok(());
+    }
+    let root = std::fs::canonicalize(worktrees_root)
+        .map_err(|_| "No se encontró el directorio local de trabajo".to_string())?;
+    let canonical_project = std::fs::canonicalize(&project_directory)
+        .map_err(|_| "No se pudo validar la carpeta local del proyecto".to_string())?;
+    if !canonical_project.starts_with(&root) || canonical_project == root {
+        return Err(
+            "La carpeta local del proyecto está fuera del directorio administrado".to_string(),
+        );
+    }
+
+    let config = canonical_project.join("opencode.json");
+    match std::fs::remove_file(config) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            return Err("No se pudo retirar la configuración MCP local del proyecto".to_string())
+        }
+    }
+
+    let planner_directory = canonical_project.join("planner");
+    if let Ok(metadata) = std::fs::symlink_metadata(&planner_directory) {
+        if metadata.is_dir() && !metadata.file_type().is_symlink() {
+            // remove_dir succeeds only if empty; non-empty contents are kept.
+            let _ = std::fs::remove_dir(&planner_directory);
+        }
+    }
+    let _ = std::fs::remove_dir(&canonical_project);
+    Ok(())
+}
+
 async fn set_status(
     pool: &SqlitePool,
     worktree_id: i64,
@@ -438,6 +536,103 @@ mod tests {
                     .expect("worktree list should load")
                     .len(),
                 2
+            );
+        });
+    }
+
+    #[test]
+    fn project_deletion_refuses_to_remove_a_worktree_with_uncommitted_changes() {
+        let repository = tempfile::tempdir().expect("test repository should be created");
+        let worktrees_root = tempfile::tempdir().expect("worktree directory should be created");
+        init_clean_repository(repository.path());
+        let pool = test_pool();
+
+        tauri::async_runtime::block_on(async {
+            let project = crate::projects::create(
+                &pool,
+                "Protected worktree".to_string(),
+                repository.path().to_string_lossy().into_owned(),
+                None,
+            )
+            .await
+            .expect("project should be registered");
+            let worktree = create(
+                &pool,
+                worktrees_root.path(),
+                project.id,
+                "Builder task".to_string(),
+            )
+            .await
+            .expect("worktree should be created");
+            let source = Path::new(&worktree.directory).join("README.md");
+            std::fs::write(&source, "uncommitted agent work\n")
+                .expect("worktree should contain user data");
+
+            let error = crate::projects::delete(&pool, worktrees_root.path(), project.id)
+                .await
+                .expect_err("dirty worktree should prevent project deletion");
+            assert!(error.contains("cambios sin guardar"));
+            assert!(source.exists(), "uncommitted data must be preserved");
+            assert_eq!(
+                crate::projects::list(&pool, false)
+                    .await
+                    .expect("active projects should load")
+                    .len(),
+                1,
+                "failed deletion should restore the project registration"
+            );
+        });
+    }
+
+    #[test]
+    fn project_deletion_removes_clean_worktrees_but_keeps_the_git_branch() {
+        let repository = tempfile::tempdir().expect("test repository should be created");
+        let worktrees_root = tempfile::tempdir().expect("worktree directory should be created");
+        init_clean_repository(repository.path());
+        let pool = test_pool();
+
+        tauri::async_runtime::block_on(async {
+            let project = crate::projects::create(
+                &pool,
+                "Clean worktree".to_string(),
+                repository.path().to_string_lossy().into_owned(),
+                None,
+            )
+            .await
+            .expect("project should be registered");
+            let worktree = create(
+                &pool,
+                worktrees_root.path(),
+                project.id,
+                "Builder task".to_string(),
+            )
+            .await
+            .expect("worktree should be created");
+            let directory = Path::new(&worktree.directory).to_path_buf();
+            let branch = worktree.branch_name.clone();
+
+            crate::projects::delete(&pool, worktrees_root.path(), project.id)
+                .await
+                .expect("clean project should be deleted");
+            assert!(
+                !directory.exists(),
+                "clean managed worktree should be removed"
+            );
+            let branch = std::ffi::OsStr::new(&branch);
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(repository.path())
+                .args(["rev-parse", "--verify"])
+                .arg(branch)
+                .output()
+                .expect("git should be installed");
+            assert!(
+                output.status.success(),
+                "the committed branch should remain recoverable"
+            );
+            assert!(
+                repository.path().exists(),
+                "source repository must be preserved"
             );
         });
     }

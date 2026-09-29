@@ -141,6 +141,129 @@ pub async fn set_archived(
         .ok_or_else(|| "El proyecto ya no existe".to_string())
 }
 
+/// Removes the project registration and its local coordination records. The
+/// source folder and Git branches are preserved; managed worktrees are removed
+/// only when clean. Archiving first prevents new tasks from starting during
+/// preflight and cleanup.
+pub async fn delete(
+    pool: &SqlitePool,
+    worktrees_root: &Path,
+    project_id: i64,
+) -> Result<(), String> {
+    let project = sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT root_path, archived_at FROM projects WHERE id = ?",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| "No se pudo consultar el proyecto".to_string())?
+    .ok_or_else(|| "El proyecto ya no existe".to_string())?;
+    let was_archived = project.1.is_some();
+
+    sqlx::query(
+        "UPDATE projects SET archived_at = COALESCE(archived_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), \
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+    )
+    .bind(project_id)
+    .execute(pool)
+    .await
+    .map_err(|_| "No se pudo preparar la eliminación del proyecto".to_string())?;
+
+    let active_tasks = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM tasks WHERE project_id = ? AND status IN ('working', 'blocked', 'review')",
+    )
+    .bind(project_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|_| "No se pudo comprobar si el proyecto tiene tareas activas".to_string())?;
+    if active_tasks > 0 {
+        restore_active_project(pool, project_id, was_archived).await;
+        return Err(
+            "Resuelve o cierra las tareas activas antes de eliminar el proyecto. Si está archivado, restáuralo para gestionarlas".to_string(),
+        );
+    }
+
+    if let Err(error) = crate::worktrees::remove_clean_for_project(
+        pool,
+        worktrees_root,
+        Path::new(&project.0),
+        project_id,
+    )
+    .await
+    {
+        restore_active_project(pool, project_id, was_archived).await;
+        return Err(error);
+    }
+
+    if let Err(error) = crate::worktrees::remove_project_config(worktrees_root, project_id) {
+        restore_active_project(pool, project_id, was_archived).await;
+        return Err(error);
+    }
+
+    let deletion = async {
+        let mut transaction = pool
+            .begin()
+            .await
+            .map_err(|_| "No se pudo iniciar la eliminación del proyecto".to_string())?;
+
+        sqlx::query(
+            "DELETE FROM task_dependencies WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?) \
+             OR depends_on_task_id IN (SELECT id FROM tasks WHERE project_id = ?)",
+        )
+        .bind(project_id)
+        .bind(project_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| "No se pudieron eliminar las dependencias del proyecto".to_string())?;
+        for table in ["handoffs", "user_decisions", "task_activity"] {
+            let query = format!(
+                "DELETE FROM {table} WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)"
+            );
+            sqlx::query(&query)
+                .bind(project_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|_| "No se pudo eliminar el historial de tareas del proyecto".to_string())?;
+        }
+        sqlx::query("DELETE FROM tasks WHERE project_id = ?")
+            .bind(project_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| "No se pudieron eliminar las tareas del proyecto".to_string())?;
+        sqlx::query("DELETE FROM worktrees WHERE project_id = ?")
+            .bind(project_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| "No se pudieron eliminar los entornos del proyecto".to_string())?;
+        sqlx::query("DELETE FROM projects WHERE id = ?")
+            .bind(project_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| "No se pudo eliminar el proyecto".to_string())?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| "No se pudo confirmar la eliminación del proyecto".to_string())
+    }
+    .await;
+
+    if deletion.is_err() {
+        restore_active_project(pool, project_id, was_archived).await;
+    }
+    deletion
+}
+
+async fn restore_active_project(pool: &SqlitePool, project_id: i64, was_archived: bool) {
+    if !was_archived {
+        let _ = sqlx::query(
+            "UPDATE projects SET archived_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+        )
+        .bind(project_id)
+        .execute(pool)
+        .await;
+    }
+}
+
 fn validate_name(name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -196,7 +319,7 @@ fn map_write_error(error: sqlx::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{create, list, set_archived, update};
+    use super::{create, delete, list, set_archived, update};
     use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
     fn test_pool() -> SqlitePool {
@@ -263,6 +386,119 @@ mod tests {
                     .len(),
                 1
             );
+        });
+    }
+
+    #[test]
+    fn deleting_project_removes_local_records_but_preserves_source_folder() {
+        let directory = tempfile::tempdir().expect("project folder should be created");
+        let worktrees_root = tempfile::tempdir().expect("worktrees folder should be created");
+        let pool = test_pool();
+
+        tauri::async_runtime::block_on(async {
+            let project = create(
+                &pool,
+                "Eliminar demo".to_string(),
+                directory.path().to_string_lossy().into_owned(),
+                None,
+            )
+            .await
+            .expect("project should be created");
+            let workspace = crate::workspaces::create(&pool, "Espacio demo".to_string(), None)
+                .await
+                .expect("workspace should be created");
+            crate::workspaces::add_project(&pool, workspace.id, project.id)
+                .await
+                .expect("project should join its workspace");
+            let task = crate::coordination::create(
+                &pool,
+                project.id,
+                "Tarea demo",
+                "Objetivo demo",
+                "build",
+                "openai",
+                "model",
+                "",
+                &[],
+            )
+            .await
+            .expect("task should be created");
+
+            delete(&pool, worktrees_root.path(), project.id)
+                .await
+                .expect("project should be deleted");
+            assert!(list(&pool, true)
+                .await
+                .expect("project list should load")
+                .is_empty());
+            assert_eq!(
+                crate::coordination::list_project(&pool, project.id)
+                    .await
+                    .expect("task list should load")
+                    .len(),
+                0
+            );
+            assert!(crate::coordination::get(&pool, task.id).await.is_err());
+            assert!(directory.path().exists(), "source folder must be preserved");
+            let membership_count = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM workspace_projects WHERE workspace_id = ? AND project_id = ?",
+            )
+            .bind(workspace.id)
+            .bind(project.id)
+            .fetch_one(&pool)
+            .await
+            .expect("workspace membership should be queryable");
+            assert_eq!(
+                membership_count, 0,
+                "workspace should remain without the project"
+            );
+        });
+    }
+
+    #[test]
+    fn active_tasks_block_project_deletion_and_restore_archive_state() {
+        let directory = tempfile::tempdir().expect("project folder should be created");
+        let worktrees_root = tempfile::tempdir().expect("worktrees folder should be created");
+        let pool = test_pool();
+
+        tauri::async_runtime::block_on(async {
+            let project = create(
+                &pool,
+                "Proyecto activo".to_string(),
+                directory.path().to_string_lossy().into_owned(),
+                None,
+            )
+            .await
+            .expect("project should be created");
+            let task = crate::coordination::create(
+                &pool,
+                project.id,
+                "Tarea activa",
+                "Objetivo demo",
+                "build",
+                "openai",
+                "model",
+                "",
+                &[],
+            )
+            .await
+            .expect("task should be created");
+            crate::coordination::mark_working(&pool, task.id, None)
+                .await
+                .expect("task should become active");
+
+            let error = delete(&pool, worktrees_root.path(), project.id)
+                .await
+                .expect_err("active tasks should prevent deletion");
+            assert!(error.contains("tareas activas"));
+            assert_eq!(
+                list(&pool, false)
+                    .await
+                    .expect("projects should load")
+                    .len(),
+                1
+            );
+            assert!(directory.path().exists());
         });
     }
 

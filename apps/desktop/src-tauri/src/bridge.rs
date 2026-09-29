@@ -340,7 +340,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "submit_handoff",
-            "description": "Entrega el trabajo terminado al coordinador con un resumen, artefactos e instrucciones para el siguiente rol. La tarea queda en revisión del usuario y no debes continuar trabajando en ella.",
+            "description": "Entrega el trabajo terminado al coordinador con un resumen, artefactos e instrucciones útiles para la siguiente tarea. La tarea queda en revisión del usuario y no debes continuar trabajando en ella.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -350,7 +350,7 @@ fn tool_definitions() -> Value {
                         "items": { "type": "string" },
                         "description": "Archivos, commits o rutas relevantes"
                     },
-                    "next_instructions": { "type": "string", "description": "Instrucciones para el siguiente rol" },
+                    "next_instructions": { "type": "string", "description": "Instrucciones útiles para la siguiente tarea" },
                     "open_questions": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -419,12 +419,16 @@ async fn call_tool(state: &ServerState, params: &Value) -> Result<Value, RpcErro
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    if session_id.trim().is_empty() || session_id.len() > 256 {
+        return Ok(tool_error(
+            "La llamada no incluye una sesión de OpenCode válida".to_string(),
+        ));
+    }
 
     let task = match coordination::task_for_session(&state.pool, &session_id).await {
         Ok(task) => task,
         Err(message) => return Ok(tool_error(message)),
     };
-
     let outcome = match name {
         "get_task_context" => task_context_text(state, task.id).await,
         "submit_handoff" => {
@@ -474,7 +478,11 @@ async fn call_tool(state: &ServerState, params: &Value) -> Result<Value, RpcErro
             let reason = required_string(&arguments, "reason")?;
             let details = optional_string(&arguments, "details")?;
             let reason_text = match details {
-                Some(details) => format!("{reason}\n\nDetalles: {details}"),
+                Some(details) => format!(
+                    "{reason}
+
+Detalles: {details}"
+                ),
                 None => reason,
             };
             match coordination::record_blocker(&state.pool, task.id, &reason_text).await {
@@ -511,7 +519,6 @@ async fn call_tool(state: &ServerState, params: &Value) -> Result<Value, RpcErro
             )))
         }
     };
-
     let (text, is_error) = match outcome {
         Ok(text) => (text, false),
         Err(message) => (message, true),
@@ -893,7 +900,6 @@ mod tests {
                 "gpt-test",
                 "",
                 &[],
-                None,
             )
             .await
             .expect("task should be created");
@@ -932,6 +938,7 @@ mod tests {
             assert!(text.contains("Objetivo"));
 
             let handoff_call = router
+                .clone()
                 .oneshot(request(
                     json!({
                         "jsonrpc": "2.0",
@@ -964,6 +971,28 @@ mod tests {
             assert_eq!(detail.handoffs.len(), 1);
             assert_eq!(detail.handoffs[0].kind, "handoff");
             assert_eq!(detail.handoffs[0].artifacts, vec!["src/api.rs".to_string()]);
+
+            let forbidden_plan = router
+                .oneshot(request(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 12,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "publish_tasks",
+                            "arguments": {
+                                "publication_key": "builder-key",
+                                "tasks": [{"title": "Extra", "objective": "No corresponde."}]
+                            },
+                            "_meta": {"sessionID": "ses_bridge"}
+                        }
+                    }),
+                    Some("secret-token"),
+                ))
+                .await
+                .expect("builder should not publish a project plan");
+            let forbidden_plan = body_json(forbidden_plan).await;
+            assert_eq!(forbidden_plan["error"]["code"], -32602);
         });
     }
 

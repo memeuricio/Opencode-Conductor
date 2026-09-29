@@ -1,4 +1,4 @@
-mod activity;
+mod agents;
 mod bridge;
 mod coordination;
 mod dispatch;
@@ -139,6 +139,14 @@ async fn set_project_archived(
 }
 
 #[tauri::command]
+async fn delete_project(
+    project_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<(), String> {
+    projects::delete(&database.pool, &database.worktrees_root, project_id).await
+}
+
+#[tauri::command]
 async fn list_project_worktrees(
     project_id: i64,
     database: State<'_, storage::Database>,
@@ -268,6 +276,49 @@ async fn bridge_status(
 }
 
 #[tauri::command]
+async fn list_agent_profiles(
+    database: State<'_, storage::Database>,
+) -> Result<Vec<agents::AgentProfile>, String> {
+    agents::list_profiles(&database.pool).await
+}
+
+#[tauri::command]
+async fn update_agent_profile(
+    role: String,
+    instructions: String,
+    database: State<'_, storage::Database>,
+) -> Result<agents::AgentProfile, String> {
+    agents::update_profile(&database.pool, &role, &instructions).await
+}
+
+#[tauri::command]
+async fn list_project_agents(
+    project_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<Vec<agents::ProjectAgent>, String> {
+    agents::list_project_agents(&database.pool, project_id).await
+}
+
+#[tauri::command]
+async fn save_project_agent(
+    project_id: i64,
+    agent_id: String,
+    provider_id: String,
+    model_id: String,
+    database: State<'_, storage::Database>,
+) -> Result<agents::ProjectAgent, String> {
+    agents::save_project_agent(
+        &database.pool,
+        project_id,
+        agents::BUILDER,
+        &agent_id,
+        &provider_id,
+        &model_id,
+    )
+    .await
+}
+
+#[tauri::command]
 async fn list_project_tasks(
     project_id: i64,
     database: State<'_, storage::Database>,
@@ -372,149 +423,27 @@ async fn start_ready_workspace_tasks(
     Ok(outcomes)
 }
 
-#[tauri::command]
-async fn list_project_activity(
-    project_id: i64,
-    limit: i64,
-    database: State<'_, storage::Database>,
-) -> Result<Vec<activity::TimelineEntry>, String> {
-    activity::project_timeline(&database.pool, project_id, limit).await
-}
-
-#[tauri::command]
-async fn get_activity_retention(database: State<'_, storage::Database>) -> Result<i64, String> {
-    activity::retention_days(&database.pool).await
-}
-
-#[tauri::command]
-async fn set_activity_retention(
-    days: i64,
-    database: State<'_, storage::Database>,
-) -> Result<i64, String> {
-    activity::set_retention_days(&database.pool, days).await
-}
-
-#[tauri::command]
-async fn list_roles(
-    include_archived: bool,
-    database: State<'_, storage::Database>,
-) -> Result<Vec<roles::Role>, String> {
-    roles::list(&database.pool, include_archived).await
-}
-
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-async fn create_role(
-    name: String,
-    description: Option<String>,
-    instructions: Option<String>,
-    agent_id: String,
-    provider_id: String,
-    model_id: String,
-    fallback_provider_id: Option<String>,
-    fallback_model_id: Option<String>,
-    file_scope: String,
-    match_keywords: String,
-    database: State<'_, storage::Database>,
-) -> Result<roles::Role, String> {
-    roles::create(
-        &database.pool,
-        name,
-        description,
-        instructions,
-        agent_id,
-        provider_id,
-        model_id,
-        fallback_provider_id,
-        fallback_model_id,
-        file_scope,
-        match_keywords,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-#[tauri::command]
-async fn update_role(
-    role_id: i64,
-    name: String,
-    description: Option<String>,
-    instructions: Option<String>,
-    agent_id: String,
-    provider_id: String,
-    model_id: String,
-    fallback_provider_id: Option<String>,
-    fallback_model_id: Option<String>,
-    file_scope: String,
-    match_keywords: String,
-    database: State<'_, storage::Database>,
-) -> Result<roles::Role, String> {
-    roles::update(
-        &database.pool,
-        role_id,
-        name,
-        description,
-        instructions,
-        agent_id,
-        provider_id,
-        model_id,
-        fallback_provider_id,
-        fallback_model_id,
-        file_scope,
-        match_keywords,
-    )
-    .await
-}
-
-#[tauri::command]
-async fn set_role_archived(
-    role_id: i64,
-    archived: bool,
-    database: State<'_, storage::Database>,
-) -> Result<roles::Role, String> {
-    roles::set_archived(&database.pool, role_id, archived).await
-}
-
-#[tauri::command]
-async fn delete_role(role_id: i64, database: State<'_, storage::Database>) -> Result<(), String> {
-    roles::delete(&database.pool, role_id).await
-}
-
-#[tauri::command]
-async fn recommend_roles(
-    title: String,
-    objective: String,
-    file_scope: String,
-    database: State<'_, storage::Database>,
-) -> Result<Vec<roles::RoleRecommendation>, String> {
-    roles::recommend(&database.pool, &title, &objective, &file_scope).await
-}
-
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn create_task(
     project_id: i64,
     title: String,
     objective: String,
-    agent_id: String,
-    provider_id: String,
-    model_id: String,
     file_scope: String,
     depends_on_ids: Vec<i64>,
-    role_id: Option<i64>,
     database: State<'_, storage::Database>,
 ) -> Result<coordination::Task, String> {
+    let builder = agents::get_project_agent(&database.pool, project_id, agents::BUILDER).await?;
     coordination::create(
         &database.pool,
         project_id,
         &title,
         &objective,
-        &agent_id,
-        &provider_id,
-        &model_id,
+        &builder.agent_id,
+        &builder.provider_id,
+        &builder.model_id,
         &file_scope,
         &depends_on_ids,
-        role_id,
     )
     .await
 }
@@ -538,7 +467,6 @@ async fn start_task(
     password: String,
     task_id: i64,
     allow_scope_conflicts: bool,
-    use_fallback: bool,
     database: State<'_, storage::Database>,
     bridge: State<'_, bridge::BridgeManager>,
 ) -> Result<coordination::Task, String> {
@@ -555,7 +483,6 @@ async fn start_task(
         &endpoint,
         task_id,
         allow_scope_conflicts,
-        use_fallback,
     )
     .await
 }
@@ -744,6 +671,7 @@ pub fn run() {
             create_project,
             update_project,
             set_project_archived,
+            delete_project,
             list_project_worktrees,
             create_project_worktree,
             preview_worktree_integration,
@@ -753,15 +681,10 @@ pub fn run() {
             refresh_worktree_session,
             reply_to_worktree_permission,
             bridge_status,
-            list_project_activity,
-            get_activity_retention,
-            set_activity_retention,
-            list_roles,
-            create_role,
-            update_role,
-            set_role_archived,
-            delete_role,
-            recommend_roles,
+            list_agent_profiles,
+            update_agent_profile,
+            list_project_agents,
+            save_project_agent,
             list_workspaces,
             create_workspace,
             update_workspace,

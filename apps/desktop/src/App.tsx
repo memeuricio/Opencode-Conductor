@@ -7,8 +7,8 @@ import "./App.css";
 import "./brand.css";
 import UsagePage from "./usage/UsagePage";
 import TasksPage from "./tasks/TasksPage";
-import RolesPage, { type Role } from "./roles/RolesPage";
-import ActivityPage from "./activity/ActivityPage";
+import AgentProfilesPage from "./agents/AgentProfilesPage";
+import ProjectBuilderDialog from "./agents/ProjectBuilderDialog";
 
 interface OpenCodeHealth {
   healthy: boolean;
@@ -112,8 +112,6 @@ interface SessionSnapshot {
 
 interface EventStreamStatus {
   state: "connecting" | "connected" | "reconnecting" | "error" | "stopped";
-  retryInMs: number | null;
-  message: string | null;
 }
 
 interface IntegrationFile {
@@ -157,7 +155,7 @@ type CatalogState =
   | { kind: "error"; message: string };
 
 function App() {
-  const [page, setPage] = useState<"dashboard" | "projects" | "tasks" | "roles" | "activity" | "usage">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "projects" | "tasks" | "profiles" | "usage">("projects");
   const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:4096");
   const [username, setUsername] = useState("opencode");
   const [password, setPassword] = useState("");
@@ -168,7 +166,6 @@ function App() {
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [showArchivedProjects, setShowArchivedProjects] = useState(false);
-  const [roles, setRoles] = useState<Role[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(true);
   const [workspaceFilter, setWorkspaceFilter] = useState<number | "none" | null>(null);
@@ -184,6 +181,7 @@ function App() {
   const [projectForm, setProjectForm] = useState<ProjectForm>({ name: "", rootPath: "", description: "" });
   const [projectFormError, setProjectFormError] = useState<string | null>(null);
   const [projectSaving, setProjectSaving] = useState(false);
+  const [agentDialogProject, setAgentDialogProject] = useState<Project | null>(null);
   const [projectBusyId, setProjectBusyId] = useState<number | null>(null);
   const [expandedProjectId, setExpandedProjectId] = useState<number | null>(null);
   const [worktreesByProject, setWorktreesByProject] = useState<Record<number, Worktree[]>>({});
@@ -213,12 +211,6 @@ function App() {
   const [taskSnapshotErrors, setTaskSnapshotErrors] = useState<Record<number, string>>({});
   const [taskAcceptedAt, setTaskAcceptedAt] = useState<Record<number, string>>({});
   const [permissionBusyId, setPermissionBusyId] = useState<string | null>(null);
-  const [eventStreamStatus, setEventStreamStatus] = useState<EventStreamStatus>({
-    state: "stopped",
-    retryInMs: null,
-    message: null,
-  });
-  const [lastRealtimeSync, setLastRealtimeSync] = useState<number | null>(null);
   const knownWorktreesRef = useRef<Worktree[]>([]);
   const taskSnapshotsRef = useRef(taskSnapshots);
   knownWorktreesRef.current = Object.values(worktreesByProject).flat();
@@ -241,18 +233,6 @@ function App() {
     void refreshProjects(false);
     void refreshWorkspaces(false);
   }, []);
-
-  const refreshRoles = useCallback(async () => {
-    try {
-      setRoles(await invoke<Role[]>("list_roles", { includeArchived: false }));
-    } catch {
-      setRoles([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (page === "tasks" || page === "roles") void refreshRoles();
-  }, [page, refreshRoles]);
 
   async function refreshWorkspaces(includeArchived: boolean) {
     setWorkspacesLoading(true);
@@ -381,12 +361,10 @@ function App() {
       if (workspaceFilter === "none") {
         return !activeWorkspaces.some((workspace) => workspace.projectIds.includes(project.id));
       }
-      if (typeof workspaceFilter === "number") {
-        return selectedWorkspace?.projectIds.includes(project.id) ?? false;
-      }
+      if (workspaceFilter !== null) return selectedWorkspace?.projectIds.includes(project.id) ?? false;
       return true;
     }),
-    [projects, showArchivedProjects, workspaceFilter, activeWorkspaces, selectedWorkspace],
+    [projects, showArchivedProjects, workspaceFilter, selectedWorkspace, activeWorkspaces],
   );
 
   useEffect(() => {
@@ -414,8 +392,6 @@ function App() {
 
   useEffect(() => {
     if (connection.kind !== "connected") {
-      setEventStreamStatus({ state: "stopped", retryInMs: null, message: null });
-      setLastRealtimeSync(null);
       return;
     }
 
@@ -447,7 +423,6 @@ function App() {
       } while (reconciliationRequested && !disposed);
 
       reconciliationRunning = false;
-      if (!disposed) setLastRealtimeSync(Date.now());
     };
 
     const scheduleReconciliation = () => {
@@ -459,11 +434,9 @@ function App() {
     };
 
     const start = async () => {
-      setEventStreamStatus({ state: "connecting", retryInMs: null, message: null });
       try {
         statusUnlisten = await listen<EventStreamStatus>("opencode-event-stream-status", (event) => {
           if (disposed) return;
-          setEventStreamStatus(event.payload);
           if (event.payload.state === "connected") {
             needsFullReconciliation = true;
             scheduleReconciliation();
@@ -478,13 +451,7 @@ function App() {
 
         await invoke("start_opencode_event_stream", { baseUrl, username, password });
       } catch {
-        if (!disposed) {
-          setEventStreamStatus({
-            state: "error",
-            retryInMs: null,
-            message: "No se pudo iniciar la suscripción a eventos de OpenCode.",
-          });
-        }
+        // La reconciliación manual de sesiones sigue disponible si falla SSE.
       }
     };
 
@@ -559,6 +526,40 @@ function App() {
         archived: project.archivedAt === null,
       });
       await refreshProjects(showArchivedProjects);
+    } catch (error) {
+      setProjectsError(String(error));
+    } finally {
+      setProjectBusyId(null);
+    }
+  }
+
+  async function deleteProject(project: Project) {
+    const confirmed = window.confirm(
+      `¿Eliminar «${project.name}» de Stade Studio?\n\n` +
+      "La carpeta original y sus ramas Git se conservan. Se borrarán las tareas y los datos de coordinación; " +
+      "los worktrees administrados solo se retiran si están limpios. Las tareas activas o cambios sin guardar bloquean la eliminación. " +
+      "Las conversaciones de OpenCode no se borran ni se detienen sus sesiones.",
+    );
+    if (!confirmed) return;
+
+    setProjectBusyId(project.id);
+    setProjectsError(null);
+    try {
+      await invoke("delete_project", { projectId: project.id });
+      if (expandedProjectId === project.id) setExpandedProjectId(null);
+      if (agentDialogProject?.id === project.id) setAgentDialogProject(null);
+      setWorktreesByProject((current) => {
+        const next = { ...current };
+        delete next[project.id];
+        return next;
+      });
+      setWorktreesErrors((current) => {
+        const next = { ...current };
+        delete next[project.id];
+        return next;
+      });
+      await refreshProjects(showArchivedProjects);
+      await refreshWorkspaces(showArchivedWorkspaces);
     } catch (error) {
       setProjectsError(String(error));
     } finally {
@@ -915,19 +916,6 @@ function App() {
   const isChecking = connection.kind === "checking";
   const isCatalogLoading = catalogState.kind === "loading";
   const connectionFieldsDisabled = isChecking || isCatalogLoading || managedServerState !== "stopped";
-  const realtimeSyncTime = lastRealtimeSync
-    ? new Date(lastRealtimeSync).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-    : null;
-  const realtimeStatusText = eventStreamStatus.state === "connected"
-    ? realtimeSyncTime ? `En vivo · sincronizado ${realtimeSyncTime}` : "En vivo · sincronizando sesiones"
-    : eventStreamStatus.state === "reconnecting"
-      ? `Reconectando${eventStreamStatus.retryInMs ? ` en ${Math.ceil(eventStreamStatus.retryInMs / 1000)} s` : ""} · el estado puede estar desactualizado`
-      : eventStreamStatus.state === "error"
-        ? eventStreamStatus.message ?? "Eventos no disponibles · usa Actualizar estado"
-        : eventStreamStatus.state === "connecting"
-          ? "Conectando al flujo de eventos…"
-          : "Eventos en pausa";
-
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -941,11 +929,6 @@ function App() {
 
         <div className="workspace-label">ESPACIO DE TRABAJO</div>
         <nav className="navigation" aria-label="Navegación principal">
-          <button className={`nav-item ${page === "dashboard" ? "active" : ""}`} type="button" onClick={() => setPage("dashboard")}>
-            <span className="nav-icon grid-icon" aria-hidden="true" />
-            <span>Panel</span>
-            {page === "dashboard" && <span className="nav-indicator" />}
-          </button>
           <button className={`nav-item ${page === "projects" ? "active" : ""}`} type="button" onClick={() => setPage("projects")}>
             <span className="nav-icon folder-icon" aria-hidden="true" />
             <span>Proyectos</span>
@@ -957,19 +940,19 @@ function App() {
             {page === "usage" && <span className="nav-indicator" />}
           </button>
           <button className={`nav-item ${page === "tasks" ? "active" : ""}`} type="button" onClick={() => setPage("tasks")}>
-            <span className="nav-icon activity-icon" aria-hidden="true" />
+            <span className="nav-icon tasks-icon" aria-hidden="true" />
             <span>Tareas</span>
             {page === "tasks" && <span className="nav-indicator" />}
           </button>
-          <button className={`nav-item ${page === "roles" ? "active" : ""}`} type="button" onClick={() => setPage("roles")}>
+          <button className={`nav-item ${page === "profiles" ? "active" : ""}`} type="button" onClick={() => setPage("profiles")}>
             <span className="nav-icon role-icon" aria-hidden="true" />
-            <span>Roles</span>
-            {page === "roles" && <span className="nav-indicator" />}
+            <span>Perfiles</span>
+            {page === "profiles" && <span className="nav-indicator" />}
           </button>
-          <button className={`nav-item ${page === "activity" ? "active" : ""}`} type="button" onClick={() => setPage("activity")}>
-            <span className="nav-icon timeline-icon" aria-hidden="true" />
-            <span>Actividad</span>
-            {page === "activity" && <span className="nav-indicator" />}
+          <button className={`nav-item ${page === "dashboard" ? "active" : ""}`} type="button" onClick={() => setPage("dashboard")}>
+            <span className="nav-icon grid-icon" aria-hidden="true" />
+            <span>OpenCode</span>
+            {page === "dashboard" && <span className="nav-indicator" />}
           </button>
         </nav>
 
@@ -981,7 +964,7 @@ function App() {
 
       <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumb"><span>Stade Studio</span><i>/</i><strong>{page === "dashboard" ? "Resumen" : page === "usage" ? "Uso" : page === "tasks" ? "Tareas" : page === "roles" ? "Roles" : page === "activity" ? "Actividad" : "Proyectos"}</strong></div>
+          <div className="breadcrumb"><span>Stade Studio</span><i>/</i><strong>{page === "dashboard" ? "Conexión" : page === "usage" ? "Uso" : page === "tasks" ? "Tareas" : page === "profiles" ? "Perfiles" : "Proyectos"}</strong></div>
           <div className="local-badge"><span className="local-badge-dot" /> DATOS LOCALES</div>
         </header>
 
@@ -989,44 +972,13 @@ function App() {
           <>
         <section className="page-heading">
           <div>
-            <p className="eyebrow">TU ESPACIO DE TRABAJO</p>
-            <h1>Coordina a tus agentes.</h1>
-            <p className="page-description">
-              Proyectos, modelos y sesiones de OpenCode en un solo lugar.
-            </p>
+            <p className="eyebrow">CONEXIÓN LOCAL</p>
+            <h1>Conecta OpenCode</h1>
+            <p className="page-description">Inicia OpenCode en segundo plano o conecta tu servidor local.</p>
           </div>
         </section>
 
-        <section className="overview-grid" aria-label="Estado del espacio de trabajo">
-          <article className="metric-card">
-            <div className="metric-label"><span className="metric-dot purple" /> PROYECTOS</div>
-            <div className="metric-value">{projectsLoading ? "…" : projects.filter((project) => project.archivedAt === null).length}</div>
-            <div className="metric-footnote">Registrados en este equipo</div>
-          </article>
-          <article className="metric-card">
-            <div className="metric-label"><span className="metric-dot blue" /> PERFILES</div>
-            <div className="metric-value">{catalogState.kind === "loaded" ? catalogState.catalog.agents?.length ?? "—" : "—"}</div>
-            <div className="metric-footnote">Perfiles descubiertos en OpenCode</div>
-          </article>
-          <article className="metric-card connection-metric">
-            <div className="metric-label"><span className="metric-dot green" /> OPENCODE</div>
-            <div className="metric-value metric-status">
-              <span className={`status-indicator ${connection.kind}`} />
-              {connection.kind === "connected" ? "Conectado" : connection.kind === "checking" ? "Conectando" : connection.kind === "error" ? "Sin conexión" : "Sin probar"}
-            </div>
-            <div className="metric-footnote">
-              {connection.kind === "connected" ? `Versión ${connection.version}` : "Servidor local · puerto 4096"}
-            </div>
-            {connection.kind === "connected" && (
-              <div className={`event-stream-status stream-${eventStreamStatus.state}`} role="status" aria-live="polite" title={eventStreamStatus.message ?? undefined}>
-                <span className="event-stream-dot" aria-hidden="true" />
-                {realtimeStatusText}
-              </div>
-            )}
-          </article>
-        </section>
-
-        <section className="content-grid">
+        <section className="content-grid connection-only-grid">
           <article className="panel connection-panel">
             <div className="panel-heading">
               <div>
@@ -1144,9 +1096,9 @@ function App() {
             )}
             {connection.kind === "connected" && (
               <div className="catalog-action-row">
-                <span>{isCatalogLoading ? "Consultando perfiles y modelos de OpenCode…" : "Perfiles y modelos disponibles en esta instalación"}</span>
+                <span>{isCatalogLoading ? "Cargando opciones de agentes…" : "Actualizar opciones de agentes"}</span>
                 <button className="secondary-button" type="button" onClick={() => void loadCatalog()} disabled={isCatalogLoading}>
-                  {catalogState.kind === "loaded" || catalogState.kind === "error" ? "Actualizar catálogo" : "Descubrir catálogo"}
+                  {catalogState.kind === "loaded" || catalogState.kind === "error" ? "Actualizar" : "Cargar"}
                 </button>
               </div>
             )}
@@ -1158,98 +1110,7 @@ function App() {
             </div>
           </article>
 
-          <aside className="panel roadmap-panel">
-            <p className="eyebrow">EN CONSTRUCCIÓN</p>
-            <h2>Un flujo, varios especialistas.</h2>
-            <p className="panel-description">
-              Estamos preparando el espacio compartido para que cada agente tome su parte y entregue el trabajo al siguiente.
-            </p>
-            <div className="roadmap-list">
-              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Ventana de escritorio local</span></div>
-              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Conexión y catálogo OpenCode</span></div>
-              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Proyectos y worktrees Git</span></div>
-              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Sesión OpenCode por entorno</span></div>
-              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Tareas, permisos y entregas</span></div>
-              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Integración revisable de cambios</span></div>
-              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Roles y recomendación de modelo</span></div>
-              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Panel de actividad</span></div>
-              <div className="roadmap-item current"><span className="roadmap-pulse" /><span>Mover worktrees a LocalAppData</span><span className="roadmap-tag">SIGUIENTE</span></div>
-            </div>
-            <div className="privacy-note"><span className="lock-icon" aria-hidden="true">▣</span> Tus proyectos permanecen en este equipo.</div>
-          </aside>
         </section>
-
-        {catalogState.kind === "loaded" && (
-          <section className="catalog-panel panel" aria-live="polite">
-            <div className="catalog-header">
-              <div>
-                <p className="eyebrow">DESCUBIERTO EN OPENCODE</p>
-                <h2>Perfiles y modelos disponibles</h2>
-              </div>
-              <button className="secondary-button" type="button" onClick={() => void loadCatalog()} disabled={isCatalogLoading}>
-                Actualizar
-              </button>
-            </div>
-
-            {catalogState.catalog.warnings.length > 0 && (
-              <div className="catalog-warnings" role="status">
-                {catalogState.catalog.warnings.map((warning) => <p key={warning}>{warning}</p>)}
-              </div>
-            )}
-
-            <div className="catalog-columns">
-              <div className="catalog-group">
-                <div className="catalog-group-heading">
-                  <h3>Perfiles de agente</h3>
-                  <span>{catalogState.catalog.agents?.length ?? "—"}</span>
-                </div>
-                {catalogState.catalog.agents === null ? (
-                  <p className="catalog-empty">No se pudieron consultar los perfiles.</p>
-                ) : catalogState.catalog.agents.length === 0 ? (
-                  <p className="catalog-empty">OpenCode no devolvió perfiles para esta ubicación.</p>
-                ) : (
-                  <div className="catalog-list">
-                    {catalogState.catalog.agents.map((agent) => (
-                      <article className="catalog-item" key={agent.id}>
-                        <div className="catalog-item-title">
-                          <strong>{agent.name}</strong>
-                          <span className="catalog-tag">{agent.mode ?? "agente"}{agent.hidden ? " · oculto" : ""}</span>
-                        </div>
-                        <p>{agent.description || `ID: ${agent.id}`}</p>
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="catalog-group">
-                <div className="catalog-group-heading">
-                  <h3>Modelos</h3>
-                  <span>{catalogState.catalog.models?.length ?? "—"}</span>
-                </div>
-                {catalogState.catalog.models === null ? (
-                  <p className="catalog-empty">No se pudieron consultar los modelos en esta versión de OpenCode.</p>
-                ) : catalogState.catalog.models.length === 0 ? (
-                  <p className="catalog-empty">OpenCode no devolvió modelos para esta instalación.</p>
-                ) : (
-                  <div className="catalog-list">
-                    {catalogState.catalog.models.map((model) => (
-                      <article className="catalog-item" key={`${model.providerId ?? "provider"}/${model.modelId ?? model.id}`}>
-                        <div className="catalog-item-title">
-                          <strong>{model.name}</strong>
-                          <span className={`catalog-tag ${model.enabled === true ? "tag-enabled" : model.enabled === false ? "tag-disabled" : ""}`}>
-                            {model.enabled === true ? "disponible" : model.enabled === false ? "desactivado" : "estado desconocido"}
-                          </span>
-                        </div>
-                        <p>{model.providerId ?? "Proveedor desconocido"} · {model.modelId ?? model.id}</p>
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-        )}
 
           </>
         )}
@@ -1258,7 +1119,7 @@ function App() {
           <section className="projects-page">
             <div className="page-heading projects-page-heading">
               <div>
-                <p className="eyebrow">ESPACIOS DE TRABAJO LOCALES</p>
+                <p className="eyebrow">CARPETAS Y ESPACIOS LOCALES</p>
                 <h1>Proyectos</h1>
                 <p className="page-description">Registra carpetas de proyecto en este equipo. No se modifica su contenido.</p>
               </div>
@@ -1417,9 +1278,7 @@ function App() {
                     <div className="project-card-content">
                       <div className="project-card-title-row">
                         <h2>{project.name}</h2>
-                        <span className={`project-git-badge ${project.isGitRepository ? "git-ready" : "git-missing"}`}>
-                          {project.isGitRepository ? "REPOSITORIO GIT" : "GIT NECESARIO PARA WORKTREES"}
-                        </span>
+                        {project.isGitRepository && <span className="project-git-badge git-ready">GIT</span>}
                         {project.archivedAt && <span className="project-archived-badge">ARCHIVADO</span>}
                       </div>
                       <code className="project-root-path">{project.rootPath}</code>
@@ -1445,11 +1304,15 @@ function App() {
                     </div>
                     <div className="project-card-actions">
                       {!project.archivedAt && <button className="project-action-button" type="button" onClick={() => openProjectDialog(project)}>Editar</button>}
+                      {!project.archivedAt && <button className="project-action-button" type="button" onClick={() => setAgentDialogProject(project)}>Builder</button>}
                       <button className="project-action-button" type="button" onClick={() => toggleProjectEnvironments(project)}>
-                        {expandedProjectId === project.id ? "Ocultar entornos" : `Entornos${worktreesByProject[project.id] ? ` · ${worktreesByProject[project.id].length}` : ""}`}
+                        {expandedProjectId === project.id ? "Ocultar avanzado" : "Avanzado"}
                       </button>
                       <button className="project-action-button" type="button" onClick={() => void toggleProjectArchived(project)} disabled={projectBusyId === project.id}>
                         {projectBusyId === project.id ? "Guardando…" : project.archivedAt ? "Restaurar" : "Archivar"}
+                      </button>
+                      <button className="project-action-button project-delete-button" type="button" onClick={() => void deleteProject(project)} disabled={projectBusyId === project.id}>
+                        Eliminar
                       </button>
                     </div>
                     {!project.archivedAt && (
@@ -1639,31 +1502,17 @@ function App() {
               name: workspace.name,
               projectIds: workspace.projectIds,
             }))}
-            roles={roles.map((role) => ({
-              id: role.id,
-              name: role.name,
-              agentId: role.agentId,
-              providerId: role.providerId,
-              modelId: role.modelId,
-              fallbackProviderId: role.fallbackProviderId,
-              fallbackModelId: role.fallbackModelId,
-              fileScope: role.fileScope,
-            }))}
-            agents={selectableAgents}
-            models={selectableModels}
+            onConfigureProject={(projectId) => {
+              const project = projects.find((entry) => entry.id === projectId) ?? null;
+              if (project) {
+                setPage("projects");
+                setAgentDialogProject(project);
+              }
+            }}
           />
         )}
 
-        {page === "roles" && (
-          <RolesPage
-            agents={selectableAgents}
-            models={selectableModels}
-          />
-        )}
-
-        {page === "activity" && (
-          <ActivityPage projects={projects} />
-        )}
+        {page === "profiles" && <AgentProfilesPage />}
 
         {projectDialogOpen && (
           <div className="project-modal-backdrop">
@@ -1707,7 +1556,7 @@ function App() {
                   />
                   {!editingProject && <button className="secondary-button" type="button" onClick={() => void chooseProjectDirectory()} disabled={projectSaving}>Examinar…</button>}
                 </div>
-                <p className="project-form-hint">Selecciona la raíz del repositorio Git para poder crear worktrees aislados más adelante. Registrar el proyecto no cambia sus archivos.</p>
+                <p className="project-form-hint">Stade Studio registra la ruta de la carpeta; no copia ni modifica tus archivos.</p>
                 <label htmlFor="project-description">Descripción <span>(opcional)</span></label>
                 <textarea
                   id="project-description"
@@ -1731,6 +1580,15 @@ function App() {
               </form>
             </section>
           </div>
+        )}
+
+        {agentDialogProject && (
+          <ProjectBuilderDialog
+            project={agentDialogProject}
+            agents={selectableAgents}
+            models={selectableModels}
+            onClose={() => setAgentDialogProject(null)}
+          />
         )}
 
         {worktreeDialogProject && (

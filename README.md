@@ -1,25 +1,34 @@
 # Stade Studio
 
-Aplicación comunitaria de escritorio local para coordinar proyectos, agentes y sesiones de OpenCode desde una sola interfaz.
+Aplicación de escritorio local para coordinar proyectos OpenCode con un Builder asignado por proyecto.
 
-- Especificación: [`docs/ESPECIFICACION-ORQUESTADOR-LOCAL-OPENCODE.md`](docs/ESPECIFICACION-ORQUESTADOR-LOCAL-OPENCODE.md)
-- Instrucciones para agentes de código: [`AGENTS.md`](AGENTS.md)
-- Aplicación Tauri: [`apps/desktop`](apps/desktop)
+- **Proyectos:** carpetas locales; pueden pertenecer a uno o varios espacios o quedar sin espacio.
+- **Espacios:** agrupaciones opcionales para filtrar proyectos y lanzar sus tareas listas.
+- **Perfiles:** instrucciones base editables del Builder.
+- **Tareas:** las añade el usuario y se asignan al Builder configurado para el proyecto.
+- **Uso:** métricas existentes del servidor OpenCode conectado.
+
+La UI se centra en Proyectos, Tareas, Perfiles, Uso y conexión OpenCode. El MCP local coordina el Builder (contexto, entregas, bloqueos y decisiones); no hay Planner asignado a proyectos o espacios en esta versión. Los detalles Git/worktree y diagnóstico MCP quedan en controles avanzados.
+
+Eliminar un proyecto lo quita de Stade Studio y borra sus datos de coordinación, pero conserva la carpeta original y sus ramas Git. Tareas activas o cambios sin guardar en worktrees bloquean la eliminación.
 
 ## Desarrollo local
 
-1. Instala Node.js, Rust, Microsoft C++ Build Tools y WebView2 en Windows.
-2. Desde `apps/desktop`, ejecuta `npm install` y `npm run tauri dev`.
-3. En el panel de Stade Studio, pulsa **Iniciar y conectar** para arrancar OpenCode en segundo plano y conectar automáticamente. También puedes conectarte a un servidor local que ya esté iniciado.
+En Windows instala Node.js, Rust, Microsoft C++ Build Tools y WebView2. Desde `apps/desktop`:
 
-La app permite iniciar/detener el servidor OpenCode que ella misma lanzó, registrar proyectos, preparar worktrees Git independientes, crear una sesión OpenCode por entorno y enviar tareas explícitamente. También muestra respuestas recientes y solicitudes de permisos; las aprobaciones son de una sola vez. Las sesiones cargadas se actualizan mediante SSE con reconexión y reconciliación; si el flujo se interrumpe, la interfaz avisa que el estado puede estar desactualizado. La página **Uso** muestra métricas del servidor conectado, no la cuota global de la cuenta; para esa cuota enlaza a OpenCode Console.
+```powershell
+npm install
+npm run tauri dev
+```
 
-La página **Tareas** añade coordinación durable: plan con dependencias, una tarea por worktree, entregas revisables, preguntas al usuario y un puente MCP local con token por ejecución, cuya configuración se escribe junto a los worktrees administrados y nunca dentro de tu repositorio. La integración revisable de cambios sigue pendiente.
+Comprobaciones:
 
-Los **Espacios** agrupan proyectos que trabajan juntos (p. ej. base de datos, backend y frontend de una app); un proyecto compartido puede vivir en varios espacios. Filtran proyectos y tareas y permiten lanzar las tareas listas de todo el espacio. La timeline combinada por espacio sigue pendiente.
+```powershell
+npm run typecheck
+npm run build
+cd src-tauri
+cargo fmt --check
+cargo test
+```
 
-Cada entorno Git (**Revisar cambios**) compara su rama contra el checkout principal y permite integrarla con un merge explícito y revisable, protegiendo cambios locales y abortando ante conflictos.
-
-Los **Roles** definen especialidades reutilizables (perfil, modelo preferido y alternativo, instrucciones, ámbito y palabras clave). Al planificar, la app sugiere el rol que encaja con motivos y tú decides; el alternativo solo se usa si lo pides al lanzar.
-
-La página **Actividad** reúne la orquestación de cada proyecto en una línea de tiempo (tareas, entregas, preguntas y envíos, sin prompts ni respuestas) con retención configurable y actualización en vivo.
+Consulta [`docs/ESPECIFICACION-ORQUESTADOR-LOCAL-OPENCODE.md`](docs/ESPECIFICACION-ORQUESTADOR-LOCAL-OPENCODE.md) para alcance y seguridad.
