@@ -13,7 +13,7 @@ pub struct Worktree {
     pub(crate) id: i64,
     pub(crate) project_id: i64,
     pub(crate) label: String,
-    branch_name: String,
+    pub(crate) branch_name: String,
     pub(crate) directory: String,
     base_commit: String,
     pub(crate) status: String,
@@ -191,6 +191,7 @@ pub async fn get_by_id(pool: &SqlitePool, worktree_id: i64) -> Result<Worktree, 
     get(pool, worktree_id).await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn attach_opencode_session(
     pool: &SqlitePool,
     worktree_id: i64,

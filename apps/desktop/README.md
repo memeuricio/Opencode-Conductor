@@ -23,6 +23,20 @@ La contraseña solo se mantiene en memoria. En **Proyectos** puedes registrar, e
 
 En **Uso** la app muestra gasto y tokens registrados por el servidor conectado, con detalle por modelo para hoy, 5 horas, 7 días y mes calendario local. Estas métricas no son la cuota global de OpenCode Go; la API local no la expone y la fuente oficial es OpenCode Console, disponible desde el botón de la página. No se consultan endpoints privados de Console ni se guardan sus claves.
 
+## Tareas y coordinación
+
+La página **Tareas** guarda en SQLite el plan del proyecto: tareas con estados (`pending`, `ready`, `working`, `blocked`, `review`, `completed`, `failed`), dependencias, entregas y decisiones de usuario. Una tarea dependiente solo pasa a **lista** cuando todas sus dependencias están completadas y con entrega aceptada; un worktree no puede sostener dos tareas activas.
+
+Al lanzar una tarea, Stade Studio:
+
+1. crea su worktree aislado (o reutiliza el de la tarea) y escribe `opencode.json` en el directorio administrado `worktrees/project-<id>/`, fuera del repositorio, registrando el servidor MCP `stade`;
+2. crea la sesión OpenCode en la ruta exacta del worktree con el perfil y el modelo de la tarea;
+3. envía objetivo, ámbito de archivos y entregas aceptadas de sus dependencias. El texto del prompt no se guarda.
+
+El agente dispone de `stade_get_task_context`, `stade_submit_handoff`, `stade_complete_task`, `stade_report_blocker` y `stade_request_user_input`. El puente escucha solo en `127.0.0.1`, con un token nuevo por ejecución y sin CORS; la identidad se resuelve con el `sessionID` que OpenCode adjunta a cada llamada, no con lo que diga el modelo. Aceptar una entrega desbloquea a las tareas dependientes; devolverla con nota vuelve a la sesión como mensaje nuevo.
+
+Si reinicias la app con el servidor OpenCode ya abierto, reinicia también el servidor o usa **Regenerar configuración** en la página Tareas para que tome el token vigente.
+
 ## Comprobaciones
 
 ```powershell

@@ -11,6 +11,7 @@ pub struct PromptReceipt {
     accepted: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_for_worktree(
     pool: &SqlitePool,
     worktrees_root: &std::path::Path,
@@ -134,6 +135,7 @@ pub async fn refresh_worktree_session(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn decide_permission(
     pool: &SqlitePool,
     worktrees_root: &std::path::Path,

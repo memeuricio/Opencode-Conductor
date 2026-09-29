@@ -76,7 +76,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .eyebrow { color: #7576aa; font-family: "Segoe UI", system-ui, sans-serif; font-size: 10px; letter-spacing: .12em; }
 h1 { color: #34323a; font-weight: 650; letter-spacing: -.04em; }
 .page-description { color: #77727a; font-size: 13px; line-height: 1.55; }
-.heading-decoration { display: none; }
 
 .metric-card {
   min-height: 116px;
@@ -238,6 +237,7 @@ h2 { color: #3b3941; font-size: 18px; font-weight: 620; letter-spacing: -.02em; 
 .project-form input::placeholder, .project-form textarea::placeholder { color: #aaa5ac; }
 .project-form-hint { color: #817c84; font-size: 10px; }
 .project-form-error { border-color: #f0d0ce; border-radius: 8px; color: #914d4a; background: #fff3f1; font-size: 10px; }
+.error-boundary-detail { border-color: #e7e3dd; border-radius: 8px; color: #6f6a73; background: #f8f7f4; font-size: 10px; }
 .project-form-actions { border-top-color: #ebe7e1; }
 .project-form-actions .primary-button { min-height: 38px; font-size: 11px; }
 .roadmap-panel { border-color: #e9e5df; background: #fffefd; }

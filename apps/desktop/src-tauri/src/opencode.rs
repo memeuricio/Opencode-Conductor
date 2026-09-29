@@ -402,6 +402,7 @@ struct AssistantMessageTime {
     completed: Option<f64>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn create_session(
     base_url: &str,
     username: &str,

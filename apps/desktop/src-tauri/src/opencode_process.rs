@@ -285,12 +285,10 @@ async fn terminate_child(child: &mut Child) -> Result<(), String> {
         .try_wait()
         .map_err(|_| "No se pudo comprobar el proceso OpenCode antes de detenerlo".to_string())?
         .is_none()
+        && child.start_kill().is_err()
+        && child.try_wait().ok().flatten().is_none()
     {
-        if child.start_kill().is_err() && child.try_wait().ok().flatten().is_none() {
-            return Err(
-                "No se pudo detener el proceso OpenCode iniciado por Stade Studio".to_string(),
-            );
-        }
+        return Err("No se pudo detener el proceso OpenCode iniciado por Stade Studio".to_string());
     }
     timeout(Duration::from_secs(5), child.wait())
         .await

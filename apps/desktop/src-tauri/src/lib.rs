@@ -1,3 +1,6 @@
+mod bridge;
+mod coordination;
+mod dispatch;
 mod events;
 mod opencode;
 mod opencode_process;
@@ -7,7 +10,7 @@ mod storage;
 mod usage;
 mod worktrees;
 
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 #[tauri::command]
 async fn check_opencode_connection(
@@ -69,6 +72,7 @@ async fn stop_opencode_event_stream(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn get_opencode_usage(
     base_url: String,
@@ -84,7 +88,6 @@ async fn get_opencode_usage(
         &base_url,
         &username,
         &password,
-        "go",
         utc_offset_minutes,
         &timezone,
         local_day_start_ms,
@@ -148,6 +151,7 @@ async fn create_project_worktree(
     worktrees::create(&database.pool, &database.worktrees_root, project_id, label).await
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn create_worktree_session(
     base_url: String,
@@ -236,6 +240,200 @@ async fn reply_to_worktree_permission(
     .await
 }
 
+#[tauri::command]
+async fn bridge_status(
+    bridge: State<'_, bridge::BridgeManager>,
+) -> Result<bridge::BridgeInfo, String> {
+    Ok(bridge.info().await)
+}
+
+#[tauri::command]
+async fn list_project_tasks(
+    project_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<Vec<coordination::TaskDetail>, String> {
+    coordination::list_project(&database.pool, project_id).await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn create_task(
+    project_id: i64,
+    title: String,
+    objective: String,
+    agent_id: String,
+    provider_id: String,
+    model_id: String,
+    file_scope: String,
+    depends_on_ids: Vec<i64>,
+    database: State<'_, storage::Database>,
+) -> Result<coordination::Task, String> {
+    coordination::create(
+        &database.pool,
+        project_id,
+        &title,
+        &objective,
+        &agent_id,
+        &provider_id,
+        &model_id,
+        &file_scope,
+        &depends_on_ids,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn update_task_definition(
+    task_id: i64,
+    title: String,
+    objective: String,
+    file_scope: String,
+    database: State<'_, storage::Database>,
+) -> Result<coordination::Task, String> {
+    coordination::update_definition(&database.pool, task_id, &title, &objective, &file_scope).await
+}
+
+#[tauri::command]
+async fn start_task(
+    base_url: String,
+    username: String,
+    password: String,
+    task_id: i64,
+    allow_scope_conflicts: bool,
+    database: State<'_, storage::Database>,
+    bridge: State<'_, bridge::BridgeManager>,
+) -> Result<coordination::Task, String> {
+    let endpoint = bridge
+        .current()
+        .await
+        .ok_or_else(|| "El puente local de herramientas no está activo".to_string())?;
+    dispatch::start_task(
+        &database.pool,
+        &database.worktrees_root,
+        &base_url,
+        &username,
+        &password,
+        &endpoint,
+        task_id,
+        allow_scope_conflicts,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn start_ready_project_tasks(
+    base_url: String,
+    username: String,
+    password: String,
+    project_id: i64,
+    database: State<'_, storage::Database>,
+    bridge: State<'_, bridge::BridgeManager>,
+) -> Result<Vec<dispatch::DispatchOutcome>, String> {
+    let endpoint = bridge
+        .current()
+        .await
+        .ok_or_else(|| "El puente local de herramientas no está activo".to_string())?;
+    dispatch::start_ready_tasks(
+        &database.pool,
+        &database.worktrees_root,
+        &base_url,
+        &username,
+        &password,
+        &endpoint,
+        project_id,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn accept_task_handoff(
+    handoff_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<coordination::Task, String> {
+    coordination::accept_handoff(&database.pool, handoff_id).await
+}
+
+#[tauri::command]
+async fn return_task_handoff(
+    base_url: String,
+    username: String,
+    password: String,
+    handoff_id: i64,
+    note: String,
+    database: State<'_, storage::Database>,
+) -> Result<coordination::Task, String> {
+    dispatch::return_handoff_with_note(
+        &database.pool,
+        &database.worktrees_root,
+        &base_url,
+        &username,
+        &password,
+        handoff_id,
+        &note,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn answer_task_decision(
+    base_url: String,
+    username: String,
+    password: String,
+    decision_id: i64,
+    answer: String,
+    database: State<'_, storage::Database>,
+) -> Result<coordination::Task, String> {
+    dispatch::answer_decision_with_prompt(
+        &database.pool,
+        &database.worktrees_root,
+        &base_url,
+        &username,
+        &password,
+        decision_id,
+        &answer,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn complete_task_manually(
+    task_id: i64,
+    summary: String,
+    database: State<'_, storage::Database>,
+) -> Result<coordination::Task, String> {
+    coordination::complete_manually(&database.pool, task_id, &summary).await
+}
+
+#[tauri::command]
+async fn fail_task(
+    task_id: i64,
+    note: String,
+    database: State<'_, storage::Database>,
+) -> Result<coordination::Task, String> {
+    coordination::mark_failed(&database.pool, task_id, &note).await
+}
+
+#[tauri::command]
+async fn reopen_task(
+    task_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<coordination::Task, String> {
+    coordination::reopen(&database.pool, task_id).await
+}
+
+#[tauri::command]
+async fn refresh_project_bridge_config(
+    project_id: i64,
+    database: State<'_, storage::Database>,
+    bridge: State<'_, bridge::BridgeManager>,
+) -> Result<(), String> {
+    let endpoint = bridge
+        .current()
+        .await
+        .ok_or_else(|| "El puente local de herramientas no está activo".to_string())?;
+    dispatch::write_project_bridge_config(&database.worktrees_root, project_id, &endpoint)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -245,7 +443,19 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let database = tauri::async_runtime::block_on(storage::connect(app_data_dir))
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let pool = database.pool.clone();
             app.manage(database);
+
+            let bridge_manager = bridge::BridgeManager::default();
+            let app_handle = app.handle().clone();
+            let notify: bridge::Notify = std::sync::Arc::new(move || {
+                let _ = app_handle.emit(bridge::COORDINATION_CHANGED, ());
+            });
+            // El puente puede fallar (por ejemplo, si el sistema bloquea el puerto);
+            // la app sigue funcionando y la GUI muestra el motivo.
+            let _ = tauri::async_runtime::block_on(bridge_manager.start(pool, notify));
+            app.manage(bridge_manager);
+
             app.manage(opencode_process::OpenCodeProcessManager::default());
             app.manage(events::OpenCodeEventManager::default());
             Ok(())
@@ -268,7 +478,20 @@ pub fn run() {
             create_worktree_session,
             send_worktree_prompt,
             refresh_worktree_session,
-            reply_to_worktree_permission
+            reply_to_worktree_permission,
+            bridge_status,
+            list_project_tasks,
+            create_task,
+            update_task_definition,
+            start_task,
+            start_ready_project_tasks,
+            accept_task_handoff,
+            return_task_handoff,
+            answer_task_decision,
+            complete_task_manually,
+            fail_task,
+            reopen_task,
+            refresh_project_bridge_config
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -277,6 +500,8 @@ pub fn run() {
         if matches!(event, tauri::RunEvent::Exit) {
             let event_manager = app_handle.state::<events::OpenCodeEventManager>();
             tauri::async_runtime::block_on(event_manager.stop(app_handle));
+            let bridge_manager = app_handle.state::<bridge::BridgeManager>();
+            tauri::async_runtime::block_on(bridge_manager.stop());
             let process_manager = app_handle.state::<opencode_process::OpenCodeProcessManager>();
             // Tauri exits the process directly after RunEvent::Exit, so explicitly stop
             // the child here instead of relying on async Child drop during runtime teardown.

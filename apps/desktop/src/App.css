@@ -57,7 +57,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .nav-item.active { color: #f2eaff; background: #28212f; }
 .nav-item:disabled { opacity: .62; }
 .nav-indicator { position: absolute; right: 10px; width: 5px; height: 5px; border-radius: 50%; background: #c19aff; box-shadow: 0 0 10px #bd91ff; }
-.nav-soon { margin-left: auto; color: #726d79; font-family: Consolas, "Courier New", monospace; font-size: 7px; letter-spacing: .08em; }
 .nav-icon { position: relative; width: 15px; height: 15px; flex: 0 0 15px; color: currentColor; }
 .grid-icon { background: linear-gradient(currentColor,currentColor) 1px 1px/5px 5px no-repeat, linear-gradient(currentColor,currentColor) 9px 1px/5px 5px no-repeat, linear-gradient(currentColor,currentColor) 1px 9px/5px 5px no-repeat, linear-gradient(currentColor,currentColor) 9px 9px/5px 5px no-repeat; opacity: .85; }
 .folder-icon { border: 1px solid currentColor; border-radius: 3px; height: 11px; margin-top: 3px; opacity: .8; }
@@ -81,11 +80,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .eyebrow { margin: 0 0 11px; color: #a58bc2; font-family: Consolas, "Courier New", monospace; font-size: 9px; letter-spacing: .16em; }
 h1 { margin: 0; color: #f7f3fa; font-size: clamp(26px, 3vw, 34px); font-weight: 600; letter-spacing: -.055em; }
 .page-description { margin: 9px 0 0; color: #a39daa; font-size: 12px; }
-.heading-decoration { position: relative; width: 126px; height: 100px; margin-right: 22px; opacity: .75; }
-.orbit { position: absolute; inset: 17px 18px; border: 1px solid rgba(176, 136, 225, .23); border-radius: 50%; transform: rotate(-31deg); }
-.orbit-one { transform: rotate(38deg) scaleY(.56); }
-.orbit-two { transform: rotate(-38deg) scaleY(.56); }
-.orbit-core { position: absolute; top: 44px; left: 57px; width: 12px; height: 12px; border: 3px solid #e0caff; border-radius: 50%; background: #9c6ad6; box-shadow: 0 0 20px rgba(183, 133, 255, .85); }
 
 .overview-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .metric-card { min-height: 112px; padding: 16px 18px; border: 1px solid var(--stroke); border-radius: 11px; background: linear-gradient(135deg, rgba(34, 31, 39, .95), rgba(25, 23, 29, .92)); }
@@ -282,6 +276,7 @@ h2 { margin: 0; color: #eee9f3; font-size: 17px; font-weight: 600; letter-spacin
 .project-path-row input { flex: 1; font-family: Consolas, "Courier New", monospace; font-size: 9px; }
 .project-form-hint { margin: 0 0 5px; color: #827c89; font-size: 8px; line-height: 1.6; }
 .project-form-error { padding: 8px 9px; border: 1px solid rgba(221, 104, 112, .28); border-radius: 6px; color: #e5aaad; background: rgba(126, 47, 57, .12); font-size: 9px; line-height: 1.5; }
+.error-boundary-detail { padding: 8px 9px; border: 1px solid #3b3742; border-radius: 6px; color: #c9c2d1; background: #141217; font-family: Consolas, "Courier New", monospace; font-size: 9px; line-height: 1.5; overflow-wrap: anywhere; }
 .project-form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; padding-top: 14px; border-top: 1px solid #302c35; }
 .project-form-actions .primary-button { min-height: 33px; font-size: 9px; }
 

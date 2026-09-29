@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDirectoryDialog } from "@tauri-apps/plugin-dialog";
@@ -6,6 +6,7 @@ import brandLogo from "./assets/logo.webp";
 import "./App.css";
 import "./brand.css";
 import UsagePage from "./usage/UsagePage";
+import TasksPage from "./tasks/TasksPage";
 
 interface OpenCodeHealth {
   healthy: boolean;
@@ -116,7 +117,7 @@ type CatalogState =
   | { kind: "error"; message: string };
 
 function App() {
-  const [page, setPage] = useState<"dashboard" | "projects" | "usage">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "projects" | "tasks" | "usage">("dashboard");
   const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:4096");
   const [username, setUsername] = useState("opencode");
   const [password, setPassword] = useState("");
@@ -414,12 +415,20 @@ function App() {
     }
   }
 
-  const selectableAgents = catalogState.kind === "loaded"
-    ? (catalogState.catalog.agents ?? []).filter((agent) => !agent.hidden && (agent.mode === "primary" || agent.mode === "all"))
-    : [];
-  const selectableModels = catalogState.kind === "loaded"
-    ? (catalogState.catalog.models ?? []).filter((model) => model.enabled === true && model.providerId)
-    : [];
+  // El catálogo solo cambia al descubrirlo: se derivan las listas una vez por
+  // catálogo en lugar de filtrarlas en cada render del panel.
+  const selectableAgents = useMemo(
+    () => catalogState.kind === "loaded"
+      ? (catalogState.catalog.agents ?? []).filter((agent) => !agent.hidden && (agent.mode === "primary" || agent.mode === "all"))
+      : [],
+    [catalogState],
+  );
+  const selectableModels = useMemo(
+    () => catalogState.kind === "loaded"
+      ? (catalogState.catalog.models ?? []).filter((model) => model.enabled === true && model.providerId)
+      : [],
+    [catalogState],
+  );
 
   function openSessionDialog(worktree: Worktree) {
     if (connection.kind !== "connected" || catalogState.kind !== "loaded") return;
@@ -683,9 +692,10 @@ function App() {
             <span>Uso</span>
             {page === "usage" && <span className="nav-indicator" />}
           </button>
-          <button className="nav-item" type="button" disabled>
+          <button className={`nav-item ${page === "tasks" ? "active" : ""}`} type="button" onClick={() => setPage("tasks")}>
             <span className="nav-icon activity-icon" aria-hidden="true" />
-            <span>Actividad</span>
+            <span>Tareas</span>
+            {page === "tasks" && <span className="nav-indicator" />}
           </button>
         </nav>
 
@@ -697,7 +707,7 @@ function App() {
 
       <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumb"><span>Stade Studio</span><i>/</i><strong>{page === "dashboard" ? "Resumen" : page === "usage" ? "Uso" : "Proyectos"}</strong></div>
+          <div className="breadcrumb"><span>Stade Studio</span><i>/</i><strong>{page === "dashboard" ? "Resumen" : page === "usage" ? "Uso" : page === "tasks" ? "Tareas" : "Proyectos"}</strong></div>
           <div className="local-badge"><span className="local-badge-dot" /> DATOS LOCALES</div>
         </header>
 
@@ -885,7 +895,8 @@ function App() {
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Conexión y catálogo OpenCode</span></div>
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Proyectos y worktrees Git</span></div>
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Sesión OpenCode por entorno</span></div>
-              <div className="roadmap-item current"><span className="roadmap-pulse" /><span>Tareas, permisos y entregas</span><span className="roadmap-tag">SIGUIENTE</span></div>
+              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Tareas, permisos y entregas</span></div>
+              <div className="roadmap-item current"><span className="roadmap-pulse" /><span>Integración revisable de cambios</span><span className="roadmap-tag">SIGUIENTE</span></div>
             </div>
             <div className="privacy-note"><span className="lock-icon" aria-hidden="true">▣</span> Tus proyectos permanecen en este equipo.</div>
           </aside>
@@ -1174,6 +1185,18 @@ function App() {
             password={password}
             catalogModels={catalogState.kind === "loaded" ? catalogState.catalog.models : null}
             onOpenPanel={() => setPage("dashboard")}
+          />
+        )}
+
+        {page === "tasks" && (
+          <TasksPage
+            baseUrl={baseUrl}
+            username={username}
+            password={password}
+            connected={connection.kind === "connected"}
+            projects={projects}
+            agents={selectableAgents}
+            models={selectableModels}
           />
         )}
 
