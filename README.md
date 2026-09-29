@@ -21,3 +21,5 @@ Los **Espacios** agrupan proyectos que trabajan juntos (p. ej. base de datos, ba
 Cada entorno Git (**Revisar cambios**) compara su rama contra el checkout principal y permite integrarla con un merge explícito y revisable, protegiendo cambios locales y abortando ante conflictos.
 
 Los **Roles** definen especialidades reutilizables (perfil, modelo preferido y alternativo, instrucciones, ámbito y palabras clave). Al planificar, la app sugiere el rol que encaja con motivos y tú decides; el alternativo solo se usa si lo pides al lanzar.
+
+La página **Actividad** reúne la orquestación de cada proyecto en una línea de tiempo (tareas, entregas, preguntas y envíos, sin prompts ni respuestas) con retención configurable y actualización en vivo.

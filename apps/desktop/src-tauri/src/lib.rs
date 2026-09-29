@@ -1,3 +1,4 @@
+mod activity;
 mod bridge;
 mod coordination;
 mod dispatch;
@@ -372,6 +373,28 @@ async fn start_ready_workspace_tasks(
 }
 
 #[tauri::command]
+async fn list_project_activity(
+    project_id: i64,
+    limit: i64,
+    database: State<'_, storage::Database>,
+) -> Result<Vec<activity::TimelineEntry>, String> {
+    activity::project_timeline(&database.pool, project_id, limit).await
+}
+
+#[tauri::command]
+async fn get_activity_retention(database: State<'_, storage::Database>) -> Result<i64, String> {
+    activity::retention_days(&database.pool).await
+}
+
+#[tauri::command]
+async fn set_activity_retention(
+    days: i64,
+    database: State<'_, storage::Database>,
+) -> Result<i64, String> {
+    activity::set_retention_days(&database.pool, days).await
+}
+
+#[tauri::command]
 async fn list_roles(
     include_archived: bool,
     database: State<'_, storage::Database>,
@@ -699,6 +722,9 @@ pub fn run() {
             refresh_worktree_session,
             reply_to_worktree_permission,
             bridge_status,
+            list_project_activity,
+            get_activity_retention,
+            set_activity_retention,
             list_roles,
             create_role,
             update_role,

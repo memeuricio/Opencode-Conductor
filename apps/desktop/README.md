@@ -43,6 +43,12 @@ La página **Roles** guarda especialidades reutilizables: nombre, descripción, 
 
 El modelo alternativo nunca se aplica solo: en tareas listas o pendientes con rol verás **Con alternativo**, que cambia el modelo de la tarea (con confirmación) antes de crear su sesión. Si la tarea ya tiene sesión, conserva su modelo.
 
+## Actividad
+
+La página **Actividad** muestra la línea de tiempo de orquestación del proyecto seleccionado: actividad durable de todas sus tareas (creaciones, envíos, entregas, preguntas, cierres), agrupada por día y sin prompts ni respuestas. Se refresca sola con los eventos en vivo de OpenCode y de coordinación. Los eventos SSE no se guardan por diseño (sus payloads pueden traer contenido sensible).
+
+La retención es configurable entre 1 y 365 días (30 por defecto) desde la propia página; al cambiarla se podan automáticamente las entradas antiguas de todos los proyectos.
+
 ## Espacios
 
 Los **Espacios** agrupan proyectos que trabajan juntos (p. ej. "App finanzas" con base de datos, backend y frontend). La relación es de muchos a muchos: un backend compartido puede estar en dos espacios a la vez. El espacio es solo una lente de agrupación y acción: los worktrees, sesiones, tareas y `opencode.json` siguen perteneciendo a cada proyecto, y el puente MCP no cambia.

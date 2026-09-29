@@ -8,6 +8,7 @@ import "./brand.css";
 import UsagePage from "./usage/UsagePage";
 import TasksPage from "./tasks/TasksPage";
 import RolesPage, { type Role } from "./roles/RolesPage";
+import ActivityPage from "./activity/ActivityPage";
 
 interface OpenCodeHealth {
   healthy: boolean;
@@ -156,7 +157,7 @@ type CatalogState =
   | { kind: "error"; message: string };
 
 function App() {
-  const [page, setPage] = useState<"dashboard" | "projects" | "tasks" | "roles" | "usage">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "projects" | "tasks" | "roles" | "activity" | "usage">("dashboard");
   const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:4096");
   const [username, setUsername] = useState("opencode");
   const [password, setPassword] = useState("");
@@ -965,6 +966,11 @@ function App() {
             <span>Roles</span>
             {page === "roles" && <span className="nav-indicator" />}
           </button>
+          <button className={`nav-item ${page === "activity" ? "active" : ""}`} type="button" onClick={() => setPage("activity")}>
+            <span className="nav-icon timeline-icon" aria-hidden="true" />
+            <span>Actividad</span>
+            {page === "activity" && <span className="nav-indicator" />}
+          </button>
         </nav>
 
         <div className="sidebar-footer">
@@ -975,7 +981,7 @@ function App() {
 
       <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumb"><span>Stade Studio</span><i>/</i><strong>{page === "dashboard" ? "Resumen" : page === "usage" ? "Uso" : page === "tasks" ? "Tareas" : page === "roles" ? "Roles" : "Proyectos"}</strong></div>
+          <div className="breadcrumb"><span>Stade Studio</span><i>/</i><strong>{page === "dashboard" ? "Resumen" : page === "usage" ? "Uso" : page === "tasks" ? "Tareas" : page === "roles" ? "Roles" : page === "activity" ? "Actividad" : "Proyectos"}</strong></div>
           <div className="local-badge"><span className="local-badge-dot" /> DATOS LOCALES</div>
         </header>
 
@@ -1166,7 +1172,8 @@ function App() {
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Tareas, permisos y entregas</span></div>
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Integración revisable de cambios</span></div>
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Roles y recomendación de modelo</span></div>
-              <div className="roadmap-item current"><span className="roadmap-pulse" /><span>Panel de actividad</span><span className="roadmap-tag">SIGUIENTE</span></div>
+              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Panel de actividad</span></div>
+              <div className="roadmap-item current"><span className="roadmap-pulse" /><span>Mover worktrees a LocalAppData</span><span className="roadmap-tag">SIGUIENTE</span></div>
             </div>
             <div className="privacy-note"><span className="lock-icon" aria-hidden="true">▣</span> Tus proyectos permanecen en este equipo.</div>
           </aside>
@@ -1651,6 +1658,10 @@ function App() {
             agents={selectableAgents}
             models={selectableModels}
           />
+        )}
+
+        {page === "activity" && (
+          <ActivityPage projects={projects} />
         )}
 
         {projectDialogOpen && (

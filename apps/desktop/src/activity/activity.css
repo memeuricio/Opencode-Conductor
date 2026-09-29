@@ -1,0 +1,12 @@
+.retention-field { display: grid; gap: 6px; color: #5f5b63; font-size: 10px; }
+.retention-field input { height: 36px; width: 90px; padding: 0 10px; border: 1px solid #e3dfd9; border-radius: 8px; color: #37353d; background: #fcfbf9; font-size: 11px; }
+.retention-field input:focus { border-color: #aaaad5; box-shadow: 0 0 0 3px rgba(191, 193, 232, .3); outline: 0; }
+.timeline-live-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #7779bd; box-shadow: 0 0 7px rgba(119, 121, 189, .25); }
+.timeline { display: grid; gap: 16px; margin-top: 14px; }
+.timeline-day-label { margin: 0 0 8px 2px; color: #7576aa; font-size: 10px; letter-spacing: .12em; text-transform: capitalize; }
+.timeline-item { display: flex; align-items: baseline; gap: 10px; padding: 9px 12px; border: 1px solid #e9e5df; border-radius: 10px; background: #fffefd; box-shadow: 0 3px 12px rgba(64, 57, 48, .035); }
+.timeline-time { flex: 0 0 auto; color: #89848a; font-size: 10px; }
+.timeline-kind { flex: 0 0 auto; padding: 3px 8px; border: 1px solid #e5e2ef; border-radius: 10px; color: #5c5b88; background: #f1f0fa; font-size: 8px; }
+.timeline-body { min-width: 0; }
+.timeline-task { margin: 0; color: #3d3a42; font-size: 11px; font-weight: 600; }
+.timeline-detail { margin: 3px 0 0; color: #77727a; font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
