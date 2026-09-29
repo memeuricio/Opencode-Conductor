@@ -674,33 +674,68 @@ pub async fn check_connection(
     })
 }
 
+const CATALOG_READY_RETRIES: usize = 8;
+const CATALOG_READY_DELAY: Duration = Duration::from_millis(400);
+
 pub async fn discover_catalog(
     base_url: &str,
     username: &str,
     password: &str,
 ) -> Result<OpenCodeCatalog, String> {
-    let mut base_url = validate_local_base_url(base_url)?;
+    let base_url = validate_local_base_url(base_url)?;
     let client = create_http_client()?;
 
-    base_url.set_path("/api/agent");
-    let agents = request_json::<OpenCodeList<OpenCodeAgent>>(
-        &client,
-        base_url.clone(),
-        username,
-        password,
-        "los perfiles de agente",
-    )
-    .await;
+    // Al arrancar, `/api/info` responde antes de que el servidor tenga listos
+    // los perfiles y modelos: el primer intento puede devolver listas vacías.
+    // Se reintenta mientras falten los agentes (siempre existen en una
+    // instalación sana) en lugar de devolver un catálogo vacío que obligue a
+    // pulsar "Actualizar" manualmente.
+    let mut last_result = None;
+    for attempt in 1..=CATALOG_READY_RETRIES {
+        let catalog = fetch_catalog_once(&client, &base_url, username, password).await;
+        if catalog_has_agents(&catalog) || attempt == CATALOG_READY_RETRIES {
+            return catalog;
+        }
+        last_result = Some(catalog);
+        tokio::time::sleep(CATALOG_READY_DELAY).await;
+    }
+    last_result.expect("el bucle de descubrimiento siempre intenta al menos una vez")
+}
 
-    base_url.set_path("/api/model");
-    let models = request_json::<OpenCodeList<OpenCodeModel>>(
-        &client,
-        base_url,
-        username,
-        password,
-        "los modelos",
-    )
-    .await;
+fn catalog_has_agents(catalog: &Result<OpenCodeCatalog, String>) -> bool {
+    catalog
+        .as_ref()
+        .ok()
+        .and_then(|catalog| catalog.agents.as_ref())
+        .is_some_and(|agents| !agents.is_empty())
+}
+
+async fn fetch_catalog_once(
+    client: &reqwest::Client,
+    base_url: &Url,
+    username: &str,
+    password: &str,
+) -> Result<OpenCodeCatalog, String> {
+    let mut agents_url = base_url.clone();
+    agents_url.set_path("/api/agent");
+    let mut models_url = base_url.clone();
+    models_url.set_path("/api/model");
+    let (agents, models) = tokio::join!(
+        request_json::<OpenCodeList<OpenCodeAgent>>(
+            client,
+            agents_url,
+            username,
+            password,
+            "los perfiles de agente",
+        ),
+        request_json::<OpenCodeList<OpenCodeModel>>(
+            client,
+            models_url,
+            username,
+            password,
+            "los modelos",
+        )
+    );
 
     let mut warnings = Vec::new();
     let agents = match agents {
@@ -759,8 +794,9 @@ pub async fn discover_catalog(
 #[cfg(test)]
 mod tests {
     use super::{
-        directories_match, validate_local_base_url, CreateSessionRequest, CreateSessionResponse,
-        ModelReference, OpenCodeAgent, OpenCodeList, OpenCodeModel, SessionLocation,
+        catalog_has_agents, directories_match, validate_local_base_url, AgentSummary,
+        CreateSessionRequest, CreateSessionResponse, ModelReference, OpenCodeAgent, OpenCodeList,
+        OpenCodeModel, SessionLocation,
     };
 
     #[test]
@@ -853,5 +889,31 @@ mod tests {
         assert_eq!(json["text"], "Implement the isolated task");
         assert_eq!(json["delivery"], "queue");
         assert_eq!(json.as_object().map(|fields| fields.len()), Some(2));
+    }
+
+    fn catalog_with_agents(
+        agents: Option<Vec<AgentSummary>>,
+    ) -> Result<super::OpenCodeCatalog, String> {
+        Ok(super::OpenCodeCatalog {
+            agents,
+            models: Some(Vec::new()),
+            warnings: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn empty_agent_list_is_not_ready_for_initial_discovery() {
+        assert!(!catalog_has_agents(&catalog_with_agents(Some(Vec::new()))));
+        assert!(!catalog_has_agents(&catalog_with_agents(None)));
+        assert!(!catalog_has_agents(&Err("falla".to_string())));
+        assert!(catalog_has_agents(&catalog_with_agents(Some(vec![
+            AgentSummary {
+                id: "build".to_string(),
+                name: "Build".to_string(),
+                mode: Some("primary".to_string()),
+                description: None,
+                hidden: Some(false),
+            }
+        ]))));
     }
 }
