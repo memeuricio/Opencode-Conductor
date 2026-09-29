@@ -7,6 +7,7 @@ import "./App.css";
 import "./brand.css";
 import UsagePage from "./usage/UsagePage";
 import TasksPage from "./tasks/TasksPage";
+import RolesPage, { type Role } from "./roles/RolesPage";
 
 interface OpenCodeHealth {
   healthy: boolean;
@@ -155,7 +156,7 @@ type CatalogState =
   | { kind: "error"; message: string };
 
 function App() {
-  const [page, setPage] = useState<"dashboard" | "projects" | "tasks" | "usage">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "projects" | "tasks" | "roles" | "usage">("dashboard");
   const [baseUrl, setBaseUrl] = useState("http://127.0.0.1:4096");
   const [username, setUsername] = useState("opencode");
   const [password, setPassword] = useState("");
@@ -166,6 +167,7 @@ function App() {
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [showArchivedProjects, setShowArchivedProjects] = useState(false);
+  const [roles, setRoles] = useState<Role[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(true);
   const [workspaceFilter, setWorkspaceFilter] = useState<number | "none" | null>(null);
@@ -238,6 +240,18 @@ function App() {
     void refreshProjects(false);
     void refreshWorkspaces(false);
   }, []);
+
+  const refreshRoles = useCallback(async () => {
+    try {
+      setRoles(await invoke<Role[]>("list_roles", { includeArchived: false }));
+    } catch {
+      setRoles([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (page === "tasks" || page === "roles") void refreshRoles();
+  }, [page, refreshRoles]);
 
   async function refreshWorkspaces(includeArchived: boolean) {
     setWorkspacesLoading(true);
@@ -946,6 +960,11 @@ function App() {
             <span>Tareas</span>
             {page === "tasks" && <span className="nav-indicator" />}
           </button>
+          <button className={`nav-item ${page === "roles" ? "active" : ""}`} type="button" onClick={() => setPage("roles")}>
+            <span className="nav-icon role-icon" aria-hidden="true" />
+            <span>Roles</span>
+            {page === "roles" && <span className="nav-indicator" />}
+          </button>
         </nav>
 
         <div className="sidebar-footer">
@@ -956,7 +975,7 @@ function App() {
 
       <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumb"><span>Stade Studio</span><i>/</i><strong>{page === "dashboard" ? "Resumen" : page === "usage" ? "Uso" : page === "tasks" ? "Tareas" : "Proyectos"}</strong></div>
+          <div className="breadcrumb"><span>Stade Studio</span><i>/</i><strong>{page === "dashboard" ? "Resumen" : page === "usage" ? "Uso" : page === "tasks" ? "Tareas" : page === "roles" ? "Roles" : "Proyectos"}</strong></div>
           <div className="local-badge"><span className="local-badge-dot" /> DATOS LOCALES</div>
         </header>
 
@@ -1146,7 +1165,8 @@ function App() {
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Sesión OpenCode por entorno</span></div>
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Tareas, permisos y entregas</span></div>
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Integración revisable de cambios</span></div>
-              <div className="roadmap-item current"><span className="roadmap-pulse" /><span>Roles y recomendación de modelo</span><span className="roadmap-tag">SIGUIENTE</span></div>
+              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Roles y recomendación de modelo</span></div>
+              <div className="roadmap-item current"><span className="roadmap-pulse" /><span>Panel de actividad</span><span className="roadmap-tag">SIGUIENTE</span></div>
             </div>
             <div className="privacy-note"><span className="lock-icon" aria-hidden="true">▣</span> Tus proyectos permanecen en este equipo.</div>
           </aside>
@@ -1611,6 +1631,23 @@ function App() {
               name: workspace.name,
               projectIds: workspace.projectIds,
             }))}
+            roles={roles.map((role) => ({
+              id: role.id,
+              name: role.name,
+              agentId: role.agentId,
+              providerId: role.providerId,
+              modelId: role.modelId,
+              fallbackProviderId: role.fallbackProviderId,
+              fallbackModelId: role.fallbackModelId,
+              fileScope: role.fileScope,
+            }))}
+            agents={selectableAgents}
+            models={selectableModels}
+          />
+        )}
+
+        {page === "roles" && (
+          <RolesPage
             agents={selectableAgents}
             models={selectableModels}
           />

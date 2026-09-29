@@ -16,6 +16,7 @@ export interface Task {
   id: number;
   projectId: number;
   worktreeId: number | null;
+  roleId: number | null;
   title: string;
   objective: string;
   status: TaskStatus;
@@ -106,6 +107,17 @@ interface WorkspaceOption {
   projectIds: number[];
 }
 
+interface RoleOption {
+  id: number;
+  name: string;
+  agentId: string;
+  providerId: string;
+  modelId: string;
+  fallbackProviderId: string | null;
+  fallbackModelId: string | null;
+  fileScope: string;
+}
+
 interface AgentOption {
   id: string;
   name: string;
@@ -124,14 +136,21 @@ interface TasksPageProps {
   connected: boolean;
   projects: ProjectOption[];
   workspaces: WorkspaceOption[];
+  roles: RoleOption[];
   agents: AgentOption[];
   models: ModelOption[];
+}
+
+interface RoleSuggestion {
+  role: RoleOption;
+  reasons: string[];
 }
 
 interface TaskFormState {
   title: string;
   objective: string;
   fileScope: string;
+  roleId: string;
   agentId: string;
   modelIndex: string;
   dependsOnIds: number[];
@@ -163,6 +182,7 @@ const ACTIVITY_LABELS: Record<string, string> = {
   working: "Trabajo iniciado",
   dispatched: "Prompt enviado al agente",
   dispatch_failed: "Falló el envío del prompt",
+  fallback_applied: "Modelo alternativo aplicado",
   handoff_submitted: "Entrega registrada por el agente",
   handoff_accepted: "Entrega aceptada",
   handoff_returned: "Entrega devuelta",
@@ -209,6 +229,7 @@ export default function TasksPage({
   connected,
   projects,
   workspaces,
+  roles,
   agents,
   models,
 }: TasksPageProps) {
@@ -237,6 +258,8 @@ export default function TasksPage({
   const [form, setForm] = useState<TaskFormState>(emptyForm());
   const [formError, setFormError] = useState<string | null>(null);
   const [formSaving, setFormSaving] = useState(false);
+  const [suggestions, setSuggestions] = useState<RoleSuggestion[] | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
   const [decisionDrafts, setDecisionDrafts] = useState<Record<number, string>>({});
   const [returnDrafts, setReturnDrafts] = useState<Record<number, string>>({});
   const [closureDrafts, setClosureDrafts] = useState<Record<number, string>>({});
@@ -251,6 +274,7 @@ export default function TasksPage({
       title: "",
       objective: "",
       fileScope: "",
+      roleId: "",
       agentId: agents[0]?.id ?? "",
       modelIndex: "0",
       dependsOnIds: [],
@@ -337,10 +361,48 @@ export default function TasksPage({
   const openRequestCount =
     (counts.blocked ?? 0) + (counts.review ?? 0);
 
+  function applyRole(roleId: string) {
+    const role = roles.find((entry) => entry.id === Number(roleId));
+    if (!role) {
+      patchForm({ roleId: "" });
+      return;
+    }
+    const modelIndex = models.findIndex(
+      (model) => model.providerId === role.providerId && model.id === role.modelId,
+    );
+    patchForm({
+      roleId,
+      agentId: role.agentId,
+      modelIndex: modelIndex >= 0 ? String(modelIndex) : "0",
+      fileScope: role.fileScope,
+    });
+  }
+
+  async function suggestRoles() {
+    setSuggesting(true);
+    setActionError(null);
+    try {
+      const raw = await invoke<{ role: RoleOption; reasons: string[] }[]>("recommend_roles", {
+        title: form.title,
+        objective: form.objective,
+        fileScope: form.fileScope,
+      });
+      setSuggestions(raw);
+      if (raw.length === 0) {
+        setActionNotice("Ningún rol encaja con este borrador; elige uno a mano o ajusta las palabras clave del rol.");
+      }
+    } catch (error) {
+      setActionError(String(error));
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
   function openCreateDialog() {
     setEditingTask(null);
     setForm(emptyForm());
     setFormError(null);
+    setSuggestions(null);
     setDialogOpen(true);
   }
 
@@ -353,11 +415,13 @@ export default function TasksPage({
       title: task.title,
       objective: task.objective,
       fileScope: task.fileScope,
+      roleId: task.roleId === null ? "" : String(task.roleId),
       agentId: task.agentId,
       modelIndex: modelIndex >= 0 ? String(modelIndex) : "0",
       dependsOnIds: [],
     });
     setFormError(null);
+    setSuggestions(null);
     setDialogOpen(true);
   }
 
@@ -389,6 +453,7 @@ export default function TasksPage({
           modelId: model.id,
           fileScope: form.fileScope,
           dependsOnIds: form.dependsOnIds,
+          roleId: form.roleId === "" ? null : Number(form.roleId),
         });
         setActionNotice(`Tarea #${created.id} añadida al plan.`);
       }
@@ -418,7 +483,12 @@ export default function TasksPage({
     }
   }
 
-  function startTask(task: Task, allowScopeConflicts: boolean) {
+  function startTask(task: Task, allowScopeConflicts: boolean, useFallback = false) {
+    if (useFallback) {
+      const role = roles.find((entry) => entry.id === task.roleId);
+      const label = role?.fallbackModelId ? `${role.fallbackProviderId}/${role.fallbackModelId}` : "el modelo alternativo";
+      if (!window.confirm(`¿Lanzar la tarea #${task.id} con ${label}? Cambia el modelo de la tarea antes de crear su sesión.`)) return Promise.resolve();
+    }
     return runAction(`start-${task.id}`, async () => {
       await invoke("start_task", {
         baseUrl,
@@ -426,8 +496,11 @@ export default function TasksPage({
         password,
         taskId: task.id,
         allowScopeConflicts,
+        useFallback,
       });
-      return `Tarea #${task.id} enviada a su agente.`;
+      return useFallback
+        ? `Tarea #${task.id} enviada con el modelo alternativo.`
+        : `Tarea #${task.id} enviada a su agente.`;
     });
   }
 
@@ -720,6 +793,13 @@ export default function TasksPage({
               onFail={failTask}
               onReopen={reopenTask}
               onEdit={openEditDialog}
+              roleName={roles.find((role) => role.id === detail.task.roleId)?.name ?? null}
+              fallbackLabel={(() => {
+                const role = roles.find((entry) => entry.id === detail.task.roleId);
+                return role?.fallbackModelId && role.fallbackProviderId
+                  ? `${role.fallbackProviderId}/${role.fallbackModelId}`
+                  : null;
+              })()}
             />
           ))}
         </div>
@@ -772,6 +852,58 @@ export default function TasksPage({
               />
               {!editingTask && (
                 <>
+                  <label htmlFor="task-role">Rol <span>propone perfil, modelo y ámbito; puedes ajustarlos</span></label>
+                  <div className="task-form-row">
+                    <select
+                      id="task-role"
+                      value={form.roleId}
+                      onChange={(event) => applyRole(event.currentTarget.value)}
+                      disabled={roles.length === 0}
+                    >
+                      <option value="">Sin rol (manual)</option>
+                      {roles.map((role) => (
+                        <option key={role.id} value={role.id}>{role.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={() => void suggestRoles()}
+                      disabled={suggesting || (!form.title.trim() && !form.objective.trim() && !form.fileScope.trim())}
+                      title="Sugiere un rol según el título, el objetivo y el ámbito"
+                    >
+                      {suggesting ? "Buscando…" : "Sugerir rol"}
+                    </button>
+                  </div>
+                  {roles.length === 0 && (
+                    <p className="project-form-hint">Crea roles en la página Roles para autocompletar perfil, modelo y ámbito.</p>
+                  )}
+                  {suggestions !== null && suggestions.length > 0 && (
+                    <div className="role-suggestion" role="status">
+                      <p>
+                        Sugerencia: <strong>{suggestions[0].role.name}</strong> — se basa en coincidencias
+                        configuradas, no en una puntuación de calidad. Puedes aplicarla o elegir otro rol.
+                      </p>
+                      <ul>
+                        {suggestions[0].reasons.map((reason) => <li key={reason}>{reason}</li>)}
+                      </ul>
+                      <div className="role-suggestion-actions">
+                        <button className="secondary-button" type="button" onClick={() => applyRole(String(suggestions[0].role.id))}>
+                          Aplicar {suggestions[0].role.name}
+                        </button>
+                        {suggestions.slice(1).map((suggestion) => (
+                          <button
+                            key={suggestion.role.id}
+                            className="project-action-button"
+                            type="button"
+                            onClick={() => applyRole(String(suggestion.role.id))}
+                          >
+                            {suggestion.role.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <label htmlFor="task-agent">Perfil y modelo</label>
                   <div className="task-form-row">
                     <select
@@ -855,7 +987,7 @@ interface TaskCardProps {
   onDecisionDraft: (id: number, value: string) => void;
   onReturnDraft: (id: number, value: string) => void;
   onClosureDraft: (id: number, value: string) => void;
-  onStart: (task: Task, allowScopeConflicts: boolean) => Promise<void>;
+  onStart: (task: Task, allowScopeConflicts: boolean, useFallback: boolean) => Promise<void>;
   onAccept: (handoff: Handoff, andContinue: boolean) => Promise<void>;
   onReturn: (handoff: Handoff) => Promise<void>;
   onAnswer: (decision: UserDecision) => Promise<void>;
@@ -863,6 +995,8 @@ interface TaskCardProps {
   onFail: (task: Task) => Promise<void>;
   onReopen: (task: Task) => Promise<void>;
   onEdit: (task: Task) => void;
+  roleName: string | null;
+  fallbackLabel: string | null;
 }
 
 function TaskCard({
@@ -884,6 +1018,8 @@ function TaskCard({
   onFail,
   onReopen,
   onEdit,
+  roleName,
+  fallbackLabel,
 }: TaskCardProps) {
   const { task } = detail;
   const pendingHandoff = latestPendingHandoff(detail);
@@ -893,14 +1029,14 @@ function TaskCard({
   const closuresEditable = ["working", "blocked", "review", "failed"].includes(task.status);
   const closureDraft = closureDrafts[task.id] ?? "";
 
-  function requestStart() {
+  function requestStart(useFallback = false) {
     if (detail.scopeConflicts.length === 0) {
-      void onStart(task, false);
+      void onStart(task, false, useFallback);
       return;
     }
     const titles = detail.scopeConflicts.map((conflict) => `#${conflict.id} «${conflict.title}»`).join(", ");
     if (window.confirm(`El ámbito de archivos se solapa con ${titles}. ¿Lanzar de todos modos?`)) {
-      void onStart(task, true);
+      void onStart(task, true, useFallback);
     }
   }
 
@@ -919,10 +1055,21 @@ function TaskCard({
             <button
               className="primary-button"
               type="button"
-              onClick={requestStart}
+              onClick={() => requestStart(false)}
               disabled={!canDispatch || busyKey === `start-${task.id}`}
             >
               {busyKey === `start-${task.id}` ? "Lanzando…" : "Lanzar"}
+            </button>
+          )}
+          {(task.status === "ready" || task.status === "pending") && fallbackLabel && (
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => requestStart(true)}
+              disabled={!canDispatch || busyKey === `start-${task.id}`}
+              title={`Lanza con el modelo alternativo del rol (${fallbackLabel})`}
+            >
+              Con alternativo
             </button>
           )}
           {task.status === "pending" && (
@@ -943,6 +1090,7 @@ function TaskCard({
 
       <div className="task-meta-row">
         <span className="task-meta-chip">{task.agentId} · {task.providerId}/{task.modelId}</span>
+        {roleName && <span className="task-meta-chip">Rol: {roleName}</span>}
         {task.worktreeId && <span className="task-meta-chip">Worktree #{task.worktreeId}</span>}
         {task.fileScope.trim() !== "" && <span className="task-meta-chip scope-chip" title={task.fileScope}>Ámbito: {task.fileScope.split("\n")[0]}{task.fileScope.split("\n").length > 1 ? "…" : ""}</span>}
       </div>

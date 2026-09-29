@@ -27,6 +27,7 @@ pub struct Task {
     pub id: i64,
     pub project_id: i64,
     pub worktree_id: Option<i64>,
+    pub role_id: Option<i64>,
     pub title: String,
     pub objective: String,
     pub status: String,
@@ -42,7 +43,7 @@ pub struct Task {
     pub completed_at: Option<String>,
 }
 
-const TASK_COLUMNS: &str = "id, project_id, worktree_id, title, objective, status, agent_id, provider_id, \
+const TASK_COLUMNS: &str = "id, project_id, worktree_id, role_id, title, objective, status, agent_id, provider_id, \
      model_id, file_scope, blocker_reason, last_error, created_at, updated_at, started_at, completed_at";
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -314,6 +315,7 @@ pub async fn create(
     model_id: &str,
     file_scope: &str,
     depends_on: &[i64],
+    role_id: Option<i64>,
 ) -> Result<Task, String> {
     let title = validate_text(title, MAX_TITLE_CHARS, "El título de la tarea")?;
     let objective = validate_text(objective, MAX_OBJECTIVE_CHARS, "El objetivo de la tarea")?;
@@ -353,14 +355,27 @@ pub async fn create(
         }
     }
 
+    if let Some(role_id) = role_id {
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM roles WHERE id = ? AND archived_at IS NULL",
+        )
+        .bind(role_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| "No se pudo comprobar el rol".to_string())?;
+        if exists.is_none() {
+            return Err("El rol ya no existe o está archivado".to_string());
+        }
+    }
+
     let mut transaction = pool
         .begin()
         .await
         .map_err(|_| "No se pudo iniciar el registro de la tarea".to_string())?;
 
     let insert_query = format!(
-        "INSERT INTO tasks (project_id, title, objective, status, agent_id, provider_id, model_id, file_scope) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING {TASK_COLUMNS}"
+        "INSERT INTO tasks (project_id, title, objective, status, agent_id, provider_id, model_id, file_scope, role_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING {TASK_COLUMNS}"
     );
     let task = sqlx::query_as::<_, Task>(&insert_query)
         .bind(project_id)
@@ -371,6 +386,7 @@ pub async fn create(
         .bind(&provider_id)
         .bind(&model_id)
         .bind(&file_scope)
+        .bind(role_id)
         .fetch_one(&mut *transaction)
         .await
         .map_err(|_| "No se pudo guardar la tarea".to_string())?;
@@ -938,6 +954,44 @@ pub async fn reopen(pool: &SqlitePool, task_id: i64) -> Result<Task, String> {
     get(pool, task_id).await
 }
 
+/// Aplica el modelo alternativo del rol a la tarea (decisión explícita del
+/// usuario, nunca automática). Solo tiene efecto al crear la sesión OpenCode:
+/// si la tarea ya tiene sesión, conserva su modelo.
+pub async fn apply_role_fallback(pool: &SqlitePool, task_id: i64) -> Result<Task, String> {
+    let task = get(pool, task_id).await?;
+    let role_id = task
+        .role_id
+        .ok_or_else(|| "La tarea no tiene un rol con modelo alternativo".to_string())?;
+    let role = crate::roles::get(pool, role_id).await?;
+    let (provider_id, model_id) = match (role.fallback_provider_id, role.fallback_model_id) {
+        (Some(provider_id), Some(model_id)) => (provider_id, model_id),
+        _ => return Err("El rol no define un modelo alternativo".to_string()),
+    };
+
+    let query = format!(
+        "UPDATE tasks SET provider_id = ?, model_id = ?, \
+         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? RETURNING {TASK_COLUMNS}"
+    );
+    let updated = sqlx::query_as::<_, Task>(&query)
+        .bind(&provider_id)
+        .bind(&model_id)
+        .bind(task_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|_| "No se pudo aplicar el modelo alternativo".to_string())?;
+
+    insert_activity(
+        pool,
+        task_id,
+        "fallback_applied",
+        Some(&format!(
+            "Modelo alternativo del rol: {provider_id}/{model_id}"
+        )),
+    )
+    .await?;
+    Ok(updated)
+}
+
 pub async fn record_dispatch_note(
     pool: &SqlitePool,
     task_id: i64,
@@ -1278,6 +1332,7 @@ mod tests {
             "gpt-test",
             "",
             &[],
+            None,
         )
         .await
         .expect("task should be created")
@@ -1309,6 +1364,7 @@ mod tests {
                 "gpt-test",
                 "",
                 &[first.id],
+                None,
             )
             .await
             .expect("dependent task should be created");
@@ -1373,6 +1429,7 @@ mod tests {
                 "gpt-test",
                 "",
                 &[first.id],
+                None,
             )
             .await
             .expect("dependent task should be created");

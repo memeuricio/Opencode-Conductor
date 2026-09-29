@@ -6,6 +6,7 @@ mod integration;
 mod opencode;
 mod opencode_process;
 mod projects;
+mod roles;
 mod sessions;
 mod storage;
 mod usage;
@@ -370,6 +371,102 @@ async fn start_ready_workspace_tasks(
     Ok(outcomes)
 }
 
+#[tauri::command]
+async fn list_roles(
+    include_archived: bool,
+    database: State<'_, storage::Database>,
+) -> Result<Vec<roles::Role>, String> {
+    roles::list(&database.pool, include_archived).await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn create_role(
+    name: String,
+    description: Option<String>,
+    instructions: Option<String>,
+    agent_id: String,
+    provider_id: String,
+    model_id: String,
+    fallback_provider_id: Option<String>,
+    fallback_model_id: Option<String>,
+    file_scope: String,
+    match_keywords: String,
+    database: State<'_, storage::Database>,
+) -> Result<roles::Role, String> {
+    roles::create(
+        &database.pool,
+        name,
+        description,
+        instructions,
+        agent_id,
+        provider_id,
+        model_id,
+        fallback_provider_id,
+        fallback_model_id,
+        file_scope,
+        match_keywords,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn update_role(
+    role_id: i64,
+    name: String,
+    description: Option<String>,
+    instructions: Option<String>,
+    agent_id: String,
+    provider_id: String,
+    model_id: String,
+    fallback_provider_id: Option<String>,
+    fallback_model_id: Option<String>,
+    file_scope: String,
+    match_keywords: String,
+    database: State<'_, storage::Database>,
+) -> Result<roles::Role, String> {
+    roles::update(
+        &database.pool,
+        role_id,
+        name,
+        description,
+        instructions,
+        agent_id,
+        provider_id,
+        model_id,
+        fallback_provider_id,
+        fallback_model_id,
+        file_scope,
+        match_keywords,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn set_role_archived(
+    role_id: i64,
+    archived: bool,
+    database: State<'_, storage::Database>,
+) -> Result<roles::Role, String> {
+    roles::set_archived(&database.pool, role_id, archived).await
+}
+
+#[tauri::command]
+async fn delete_role(role_id: i64, database: State<'_, storage::Database>) -> Result<(), String> {
+    roles::delete(&database.pool, role_id).await
+}
+
+#[tauri::command]
+async fn recommend_roles(
+    title: String,
+    objective: String,
+    file_scope: String,
+    database: State<'_, storage::Database>,
+) -> Result<Vec<roles::RoleRecommendation>, String> {
+    roles::recommend(&database.pool, &title, &objective, &file_scope).await
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn create_task(
@@ -381,6 +478,7 @@ async fn create_task(
     model_id: String,
     file_scope: String,
     depends_on_ids: Vec<i64>,
+    role_id: Option<i64>,
     database: State<'_, storage::Database>,
 ) -> Result<coordination::Task, String> {
     coordination::create(
@@ -393,6 +491,7 @@ async fn create_task(
         &model_id,
         &file_scope,
         &depends_on_ids,
+        role_id,
     )
     .await
 }
@@ -408,6 +507,7 @@ async fn update_task_definition(
     coordination::update_definition(&database.pool, task_id, &title, &objective, &file_scope).await
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn start_task(
     base_url: String,
@@ -415,6 +515,7 @@ async fn start_task(
     password: String,
     task_id: i64,
     allow_scope_conflicts: bool,
+    use_fallback: bool,
     database: State<'_, storage::Database>,
     bridge: State<'_, bridge::BridgeManager>,
 ) -> Result<coordination::Task, String> {
@@ -431,6 +532,7 @@ async fn start_task(
         &endpoint,
         task_id,
         allow_scope_conflicts,
+        use_fallback,
     )
     .await
 }
@@ -597,6 +699,12 @@ pub fn run() {
             refresh_worktree_session,
             reply_to_worktree_permission,
             bridge_status,
+            list_roles,
+            create_role,
+            update_role,
+            set_role_archived,
+            delete_role,
+            recommend_roles,
             list_workspaces,
             create_workspace,
             update_workspace,

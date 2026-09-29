@@ -59,7 +59,13 @@ pub async fn start_task(
     bridge: &Bridge,
     task_id: i64,
     allow_scope_conflicts: bool,
+    use_fallback: bool,
 ) -> Result<coordination::Task, String> {
+    // El modelo alternativo solo se aplica por decisión explícita del usuario,
+    // nunca automáticamente. Solo afecta a la creación de la sesión.
+    if use_fallback {
+        coordination::apply_role_fallback(pool, task_id).await?;
+    }
     let task = coordination::get(pool, task_id).await?;
     match task.status.as_str() {
         coordination::STATUS_READY => {}
@@ -193,7 +199,14 @@ pub async fn start_task(
 
     // 4. Prompt con el contexto durable de las dependencias.
     let context = coordination::accepted_dependency_context(pool, task_id).await?;
-    let prompt = build_task_prompt(&task, &context)?;
+    let role_instructions = match task.role_id {
+        Some(role_id) => crate::roles::get(pool, role_id)
+            .await
+            .ok()
+            .and_then(|role| role.instructions.clone()),
+        None => None,
+    };
+    let prompt = build_task_prompt(&task, &context, role_instructions.as_deref())?;
 
     if let Err(error) =
         opencode::send_session_prompt(base_url, username, password, &session_id, &prompt).await
@@ -241,6 +254,7 @@ pub async fn start_ready_tasks(
             password,
             bridge,
             task_id,
+            false,
             false,
         )
         .await;
@@ -362,11 +376,18 @@ async fn send_to_task_session(
 pub fn build_task_prompt(
     task: &coordination::Task,
     context: &[(coordination::Task, coordination::HandoffRecord)],
+    role_instructions: Option<&str>,
 ) -> Result<String, String> {
     let mut prompt = String::new();
     prompt.push_str("Tarea coordinada por Stade Studio.\n\n");
     prompt.push_str(&format!("Tarea #{} — «{}»\n", task.id, task.title));
     prompt.push_str(&format!("Objetivo:\n{}\n", task.objective.trim()));
+    if let Some(instructions) = role_instructions
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        prompt.push_str(&format!("\nInstrucciones de tu rol:\n{instructions}\n"));
+    }
     prompt.push_str(&format!(
         "\nÁmbito de archivos declarado: {}\n",
         if task.file_scope.trim().is_empty() {
@@ -448,6 +469,7 @@ mod tests {
             id: 7,
             project_id: 1,
             worktree_id: None,
+            role_id: None,
             title: "Construir la API".to_string(),
             objective: "Exponer el contrato aprobado".to_string(),
             status: coordination::STATUS_READY.to_string(),
@@ -487,7 +509,7 @@ mod tests {
             id: 1,
             ..sample_task()
         };
-        let prompt = build_task_prompt(&task, &[(dependency, sample_handoff())])
+        let prompt = build_task_prompt(&task, &[(dependency, sample_handoff())], None)
             .expect("prompt should build");
 
         assert!(prompt.contains("Tarea #7 — «Construir la API»"));
@@ -500,10 +522,19 @@ mod tests {
     }
 
     #[test]
+    fn prompt_includes_role_instructions_when_present() {
+        let task = sample_task();
+        let prompt = build_task_prompt(&task, &[], Some("Sigue el contrato aprobado"))
+            .expect("prompt should build");
+        assert!(prompt.contains("Instrucciones de tu rol"));
+        assert!(prompt.contains("Sigue el contrato aprobado"));
+    }
+
+    #[test]
     fn prompt_rejects_oversized_objectives() {
         let mut task = sample_task();
         task.objective = "x".repeat(MAX_PROMPT_CHARS);
-        let error = build_task_prompt(&task, &[]).expect_err("prompt should not fit");
+        let error = build_task_prompt(&task, &[], None).expect_err("prompt should not fit");
         assert!(error.contains("demasiado largo"));
     }
 

@@ -893,6 +893,7 @@ mod tests {
                 "gpt-test",
                 "",
                 &[],
+                None,
             )
             .await
             .expect("task should be created");

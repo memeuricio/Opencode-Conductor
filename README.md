@@ -19,3 +19,5 @@ La página **Tareas** añade coordinación durable: plan con dependencias, una t
 Los **Espacios** agrupan proyectos que trabajan juntos (p. ej. base de datos, backend y frontend de una app); un proyecto compartido puede vivir en varios espacios. Filtran proyectos y tareas y permiten lanzar las tareas listas de todo el espacio. La timeline combinada por espacio sigue pendiente.
 
 Cada entorno Git (**Revisar cambios**) compara su rama contra el checkout principal y permite integrarla con un merge explícito y revisable, protegiendo cambios locales y abortando ante conflictos.
+
+Los **Roles** definen especialidades reutilizables (perfil, modelo preferido y alternativo, instrucciones, ámbito y palabras clave). Al planificar, la app sugiere el rol que encaja con motivos y tú decides; el alternativo solo se usa si lo pides al lanzar.
