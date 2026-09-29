@@ -37,6 +37,12 @@ El agente dispone de `stade_get_task_context`, `stade_submit_handoff`, `stade_co
 
 Si reinicias la app con el servidor OpenCode ya abierto, reinicia también el servidor o usa **Regenerar configuración** en la página Tareas para que tome el token vigente.
 
+Si una tarea queda colgada tras terminar el agente, casi siempre es porque el agente no vio las herramientas `stade_*` (servidor externo sin la configuración vigente) o no las llamó: reinicia el servidor, regenera la configuración y vuelve a lanzar. Como salida manual, cada tarjeta permite completar o fallar la tarea. El agente debe dejar sus cambios commiteados en el worktree; la revisión e integración los exigen.
+
+En tareas en curso, bloqueadas o en revisión tienes **Pedir entrega**: envía un mensaje a la sesión para que commitee y registre su entrega, sin cerrar la tarea. Para el cierre manual o el fallo hay que escribir primero la nota (los botones se activan al escribir).
+
+Con **Verificar herramientas** compruebas si OpenCode cargó `stade_*` para ese entorno. Además, al lanzar una tarea la app espera a que el puente aparezca conectado (hasta ~8 s) y bloquea el lanzamiento con un mensaje claro si no aparece: así no se gasta el turno del modelo en una tarea condenada a colgarse.
+
 ## Roles
 
 La página **Roles** guarda especialidades reutilizables: nombre, descripción, instrucciones (llegan al agente en cada tarea del rol), perfil OpenCode, modelo preferido y alternativo, ámbito de archivos y palabras clave. Al crear una tarea puedes elegir rol (rellena perfil, modelo y ámbito, todo editable) o pulsar **Sugerir rol**, que propone hasta 3 candidatos con motivos legibles —palabras en título/objetivo y solapamiento de ámbito— sin puntuación de calidad. Borrar un rol no afecta a las tareas existentes.

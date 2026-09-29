@@ -676,6 +676,121 @@ pub async fn check_connection(
 
 const CATALOG_READY_RETRIES: usize = 14;
 const CATALOG_READY_DELAY: Duration = Duration::from_millis(750);
+const MCP_READY_POLLS: usize = 16;
+const MCP_READY_DELAY: Duration = Duration::from_millis(500);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerStatus {
+    pub found: bool,
+    pub status: Option<String>,
+}
+
+/// Estado del servidor MCP «stade» según OpenCode para un directorio de
+/// sesión. Permite comprobar ANTES de lanzar que el agente verá las
+/// herramientas de coordinación, en lugar de descubrirlo cuando la tarea
+/// queda colgada al terminar.
+pub async fn mcp_server_status(
+    base_url: &str,
+    username: &str,
+    password: &str,
+    directory: &str,
+) -> Result<McpServerStatus, String> {
+    let mut url = validate_local_base_url(base_url)?;
+    url.set_path("/api/mcp");
+    url.query_pairs_mut()
+        .append_pair("location[directory]", directory);
+    let payload: serde_json::Value = request_json(
+        &create_http_client()?,
+        url,
+        username,
+        password,
+        "los servidores MCP",
+    )
+    .await?;
+    Ok(parse_mcp_status(&payload))
+}
+
+fn parse_mcp_status(payload: &serde_json::Value) -> McpServerStatus {
+    let entry = payload
+        .get("data")
+        .and_then(|data| data.as_array())
+        .map(|servers| {
+            servers
+                .iter()
+                .find(|server| server.get("name") == Some(&serde_json::Value::from("stade")))
+        })
+        .flatten();
+    match entry {
+        None => McpServerStatus {
+            found: false,
+            status: None,
+        },
+        Some(entry) => McpServerStatus {
+            found: true,
+            status: entry
+                .get("status")
+                .and_then(|status| {
+                    status
+                        .get("status")
+                        .or_else(|| status.get("type"))
+                        .and_then(|value| value.as_str())
+                })
+                .map(str::to_string),
+        },
+    }
+}
+
+/// Espera a que OpenCode conecte el puente «stade» para el worktree. Si el
+/// servidor no expone `/api/mcp` (versión no compatible) no bloquea: conserva
+/// el comportamiento anterior. Cualquier otro estado distinto de
+/// «connected» tras la espera se devuelve como error accionable.
+pub async fn wait_for_mcp_connected(
+    base_url: &str,
+    username: &str,
+    password: &str,
+    directory: &str,
+) -> Result<(), String> {
+    let mut last = McpServerStatus {
+        found: false,
+        status: None,
+    };
+    for attempt in 1..=MCP_READY_POLLS {
+        match mcp_server_status(base_url, username, password, directory).await {
+            Ok(status) => {
+                if status.status.as_deref() == Some("connected") {
+                    return Ok(());
+                }
+                last = status;
+            }
+            Err(error) => {
+                if error.contains("no reconoce el endpoint") {
+                    return Ok(());
+                }
+                if attempt == MCP_READY_POLLS {
+                    return Err(error);
+                }
+            }
+        }
+        tokio::time::sleep(MCP_READY_DELAY).await;
+    }
+    Err(mcp_not_ready_message(&last))
+}
+
+fn mcp_not_ready_message(last: &McpServerStatus) -> String {
+    if !last.found {
+        "OpenCode no cargó las herramientas de coordinación («stade») para este entorno. \
+         Reinicia el servidor OpenCode para que lea la configuración vigente (o usa Regenerar \
+         configuración y reinicia) y vuelve a lanzar la tarea"
+            .to_string()
+    } else {
+        format!(
+            "El puente de coordinación no está conectado (estado: {}). \
+             Reinicia el servidor OpenCode y vuelve a lanzar la tarea",
+            last.status.as_deref().unwrap_or("desconocido")
+        )
+    }
+}
 
 pub async fn discover_catalog(
     base_url: &str,
@@ -915,5 +1030,28 @@ mod tests {
                 hidden: Some(false),
             }
         ]))));
+    }
+
+    #[test]
+    fn mcp_status_detects_the_stade_bridge() {
+        let connected = serde_json::json!({
+            "data": [
+                {"name": "other", "status": {"status": "connected"}},
+                {"name": "stade", "status": {"status": "connected"}},
+            ]
+        });
+        let status = super::parse_mcp_status(&connected);
+        assert!(status.found);
+        assert_eq!(status.status.as_deref(), Some("connected"));
+
+        let missing = serde_json::json!({"data": []});
+        assert!(!super::parse_mcp_status(&missing).found);
+
+        let failed = serde_json::json!({
+            "data": [{"name": "stade", "status": {"type": "failed"}}]
+        });
+        let status = super::parse_mcp_status(&failed);
+        assert!(status.found);
+        assert_eq!(status.status.as_deref(), Some("failed"));
     }
 }

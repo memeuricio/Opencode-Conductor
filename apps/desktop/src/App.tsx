@@ -1632,6 +1632,7 @@ function App() {
             username={username}
             password={password}
             connected={connection.kind === "connected"}
+            managedServer={managedServerState === "running"}
             projects={projects}
             workspaces={activeWorkspaces.map((workspace) => ({
               id: workspace.id,

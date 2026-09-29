@@ -94,6 +94,14 @@ interface BridgeInfo {
   message: string | null;
 }
 
+interface SessionInfo {
+  active: boolean;
+  latestResponse: string | null;
+  responseCompleted: boolean;
+  permissions: { id: string }[];
+  permissionWarning: string | null;
+}
+
 interface ProjectOption {
   id: number;
   name: string;
@@ -134,6 +142,7 @@ interface TasksPageProps {
   username: string;
   password: string;
   connected: boolean;
+  managedServer: boolean;
   projects: ProjectOption[];
   workspaces: WorkspaceOption[];
   roles: RoleOption[];
@@ -182,6 +191,7 @@ const ACTIVITY_LABELS: Record<string, string> = {
   working: "Trabajo iniciado",
   dispatched: "Prompt enviado al agente",
   dispatch_failed: "Falló el envío del prompt",
+  nudge_sent: "Entrega pedida al agente",
   fallback_applied: "Modelo alternativo aplicado",
   handoff_submitted: "Entrega registrada por el agente",
   handoff_accepted: "Entrega aceptada",
@@ -227,6 +237,7 @@ export default function TasksPage({
   username,
   password,
   connected,
+  managedServer,
   projects,
   workspaces,
   roles,
@@ -263,6 +274,8 @@ export default function TasksPage({
   const [decisionDrafts, setDecisionDrafts] = useState<Record<number, string>>({});
   const [returnDrafts, setReturnDrafts] = useState<Record<number, string>>({});
   const [closureDrafts, setClosureDrafts] = useState<Record<number, string>>({});
+  const [sessionInfo, setSessionInfo] = useState<Record<number, SessionInfo>>({});
+  const [sessionCheckingId, setSessionCheckingId] = useState<number | null>(null);
 
   const projectId = selectedProjectId !== null && visibleProjects.some((project) => project.id === selectedProjectId)
     ? selectedProjectId
@@ -627,6 +640,63 @@ export default function TasksPage({
     });
   }
 
+  function checkBridgeTools(task: Task) {
+    if (task.worktreeId === null) {
+      setActionError("La tarea aún no tiene entorno que comprobar.");
+      return Promise.resolve();
+    }
+    return runAction(`mcp-${task.id}`, async () => {
+      const status = await invoke<{ found: boolean; status: string | null }>(
+        "check_worktree_bridge_tools",
+        { baseUrl, username, password, worktreeId: task.worktreeId },
+      );
+      if (!status.found) {
+        throw new Error(
+          "OpenCode no cargó «stade» para este entorno. Reinicia el servidor (o Regenerar configuración + reinicia) y vuelve a lanzar.",
+        );
+      }
+      if (status.status !== "connected") {
+        throw new Error(
+          `El puente «stade» aparece con estado ${status.status ?? "desconocido"}. Reinicia el servidor OpenCode y vuelve a lanzar.`,
+        );
+      }
+      return "Herramientas «stade_*» conectadas para este entorno.";
+    });
+  }
+
+  function nudgeTask(task: Task) {    return runAction(`nudge-${task.id}`, async () => {
+      await invoke("nudge_task", {
+        baseUrl,
+        username,
+        password,
+        taskId: task.id,
+      });
+      await checkSession(task, true);
+      return `Se pidió entrega al agente de la tarea #${task.id}. Si registra su entrega, aparecerá en revisión.`;
+    });
+  }
+
+  async function checkSession(task: Task, silent = false) {
+    if (task.worktreeId === null) {
+      if (!silent) setActionError("La tarea aún no tiene entorno ni sesión que consultar.");
+      return;
+    }
+    if (!silent) setSessionCheckingId(task.id);
+    try {
+      const snapshot = await invoke<SessionInfo>("refresh_worktree_session", {
+        baseUrl,
+        username,
+        password,
+        worktreeId: task.worktreeId,
+      });
+      setSessionInfo((current) => ({ ...current, [task.id]: snapshot }));
+    } catch (error) {
+      if (!silent) setActionError(String(error));
+    } finally {
+      if (!silent) setSessionCheckingId(null);
+    }
+  }
+
   function refreshBridgeConfig() {
     if (projectId === null) return;
     return runAction(`bridge-${projectId}`, async () => {
@@ -741,6 +811,14 @@ export default function TasksPage({
           </button>
         </div>
         {!connected && <p className="tasks-inline-warning">Conecta OpenCode para lanzar tareas y responder a los agentes.</p>}
+        {connected && !managedServer && (
+          <p className="tasks-inline-warning">
+            Conectado a un servidor que no inició la app: el agente solo ve las herramientas de
+            coordinación (<code>stade_*</code>) si el servidor las cargó al arrancar. Si la tarea
+            queda colgada al terminar, reinicia el servidor o usa <strong>Regenerar configuración</strong> y
+            vuelve a lanzar. También puedes cerrar la tarea a mano desde su tarjeta.
+          </p>
+        )}
         {!bridge?.ready && bridge?.message && <p className="tasks-inline-warning">{bridge.message}</p>}
         {selectedProject && !selectedProject.isGitRepository && (
           <p className="tasks-inline-warning">
@@ -792,6 +870,11 @@ export default function TasksPage({
               onComplete={completeManually}
               onFail={failTask}
               onReopen={reopenTask}
+              onNudge={nudgeTask}
+              onCheckTools={(task) => void checkBridgeTools(task)}
+              onCheckSession={(task) => void checkSession(task)}
+              sessionSnapshot={sessionInfo[detail.task.id] ?? null}
+              sessionChecking={sessionCheckingId === detail.task.id}
               onEdit={openEditDialog}
               roleName={roles.find((role) => role.id === detail.task.roleId)?.name ?? null}
               fallbackLabel={(() => {
@@ -994,6 +1077,11 @@ interface TaskCardProps {
   onComplete: (task: Task) => Promise<void>;
   onFail: (task: Task) => Promise<void>;
   onReopen: (task: Task) => Promise<void>;
+  onNudge: (task: Task) => Promise<void>;
+  onCheckTools: (task: Task) => void;
+  onCheckSession: (task: Task) => void;
+  sessionSnapshot: SessionInfo | null;
+  sessionChecking: boolean;
   onEdit: (task: Task) => void;
   roleName: string | null;
   fallbackLabel: string | null;
@@ -1017,6 +1105,11 @@ function TaskCard({
   onComplete,
   onFail,
   onReopen,
+  onNudge,
+  onCheckTools,
+  onCheckSession,
+  sessionSnapshot,
+  sessionChecking,
   onEdit,
   roleName,
   fallbackLabel,
@@ -1075,6 +1168,39 @@ function TaskCard({
           {task.status === "pending" && (
             <span className="task-waiting-note">Espera entregas aceptadas de sus dependencias</span>
           )}
+          {["working", "blocked", "review"].includes(task.status) && (
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void onNudge(task)}
+              disabled={!canDispatch || busyKey === `nudge-${task.id}`}
+              title="Envía un mensaje a la sesión para que commitee y registre su entrega"
+            >
+              {busyKey === `nudge-${task.id}` ? "Pidiendo…" : "Pedir entrega"}
+            </button>
+          )}
+          {["working", "blocked", "review"].includes(task.status) && task.worktreeId !== null && (
+            <button
+              className="project-action-button"
+              type="button"
+              onClick={() => onCheckSession(task)}
+              disabled={!connected || sessionChecking}
+              title="Consulta si la sesión sigue activa y cuál fue su última respuesta"
+            >
+              {sessionChecking ? "Consultando…" : "Consultar sesión"}
+            </button>
+          )}
+          {["working", "blocked", "review", "ready", "pending"].includes(task.status) && task.worktreeId !== null && (
+            <button
+              className="project-action-button"
+              type="button"
+              onClick={() => onCheckTools(task)}
+              disabled={!connected || busyKey === `mcp-${task.id}`}
+              title="Comprueba si OpenCode cargó las herramientas stade_* para este entorno"
+            >
+              {busyKey === `mcp-${task.id}` ? "Comprobando…" : "Verificar herramientas"}
+            </button>
+          )}
           {["pending", "ready", "failed"].includes(task.status) && (
             <button className="project-action-button" type="button" onClick={() => onEdit(task)}>Editar</button>
           )}
@@ -1126,6 +1252,34 @@ function TaskCard({
       )}
       {task.blockerReason && <p className="task-blocker">Bloqueo: {task.blockerReason}</p>}
       {task.lastError && <p className="task-inline-error">Último error: {task.lastError}</p>}
+
+      {sessionSnapshot && (
+        <div className="task-session-box" role="status">
+          <p>
+            Sesión: <strong>{sessionSnapshot.active ? "TRABAJANDO" : "INACTIVA"}</strong>
+            {sessionSnapshot.permissions.length > 0 && (
+              <> · {sessionSnapshot.permissions.length} {sessionSnapshot.permissions.length === 1 ? "permiso pendiente" : "permisos pendientes"}</>
+            )}
+          </p>
+          {sessionSnapshot.latestResponse ? (
+            <p className="task-session-response">
+              Última respuesta{sessionSnapshot.responseCompleted ? " (completa)" : " (en curso)"}: {sessionSnapshot.latestResponse.slice(0, 400)}
+              {sessionSnapshot.latestResponse.length > 400 ? "…" : ""}
+            </p>
+          ) : (
+            <p className="task-session-response">Sin respuestas del agente todavía.</p>
+          )}
+          {!sessionSnapshot.active && sessionSnapshot.latestResponse && (
+            <p className="task-session-hint">
+              La sesión terminó sin registrar entrega: usa <strong>Pedir entrega</strong> para que
+              commitee y llame a la herramienta de entrega, o cierra la tarea a mano.
+            </p>
+          )}
+          {sessionSnapshot.permissionWarning && (
+            <p className="task-session-hint">No se pudieron consultar permisos: {sessionSnapshot.permissionWarning}</p>
+          )}
+        </div>
+      )}
 
       {outstandingDecision && (
         <div className="task-decision-panel">
@@ -1245,7 +1399,8 @@ function TaskCard({
           <input
             value={closureDraft}
             onChange={(event) => onClosureDraft(task.id, event.currentTarget.value)}
-            placeholder="Nota de cierre o motivo de fallo"
+            placeholder="Escribe aquí la nota para activar el cierre o el fallo"
+            title="La nota es obligatoria: sin ella los botones siguen desactivados"
             maxLength={8000}
           />
           <button

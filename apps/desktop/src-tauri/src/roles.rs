@@ -196,8 +196,9 @@ pub async fn delete(pool: &SqlitePool, role_id: i64) -> Result<(), String> {
 }
 
 /// Recomendación transparente y configurable: puntúa por palabras clave en
-/// título/objetivo y por solapamiento de ámbito. No afirma calidad objetiva;
-/// devuelve motivos legibles para que el usuario decida y pueda cambiarlo.
+/// título/objetivo y por solapamiento de ámbito. La comparación ignora
+/// mayúsculas y tildes para no fallar con texto en español. No afirma calidad
+/// objetiva; devuelve motivos legibles para que el usuario decida y pueda cambiarlo.
 pub async fn recommend(
     pool: &SqlitePool,
     title: &str,
@@ -205,11 +206,11 @@ pub async fn recommend(
     file_scope: &str,
 ) -> Result<Vec<RoleRecommendation>, String> {
     let roles = list(pool, false).await?;
-    let title = title.to_lowercase();
-    let objective = objective.to_lowercase();
+    let title = fold_spanish(title);
+    let objective = fold_spanish(objective);
     let scope_lines: Vec<String> = file_scope
         .lines()
-        .map(|line| line.trim().to_lowercase())
+        .map(|line| fold_spanish(line.trim()))
         .filter(|line| !line.is_empty())
         .take(MAX_SCOPE_LINES)
         .collect();
@@ -218,7 +219,11 @@ pub async fn recommend(
     for role in roles {
         let mut score: i64 = 0;
         let mut reasons = Vec::new();
-        for keyword in split_keywords(&role.match_keywords) {
+        // Palabras clave explícitas más palabras del nombre y la descripción,
+        // para que «Backend» encaje con un objetivo que dice «backend».
+        let mut terms = split_keywords(&role.match_keywords);
+        terms.extend(name_terms(&role.name, &role.description));
+        for keyword in terms {
             if title.contains(&keyword) {
                 score += 3;
                 reasons.push(format!("«{keyword}» aparece en el título"));
@@ -231,7 +236,7 @@ pub async fn recommend(
             for role_line in role
                 .file_scope
                 .lines()
-                .map(|line| line.trim().to_lowercase())
+                .map(|line| fold_spanish(line.trim()))
                 .filter(|line| !line.is_empty())
                 .take(MAX_SCOPE_LINES)
             {
@@ -254,9 +259,43 @@ pub async fn recommend(
 
 fn split_keywords(raw: &str) -> Vec<String> {
     raw.split([',', '\n', ';'])
-        .map(|part| part.trim().to_lowercase())
+        .map(|part| fold_spanish(part.trim()))
         .filter(|part| !part.is_empty())
         .take(MAX_KEYWORDS)
+        .collect()
+}
+
+/// Palabras del nombre y la descripción (de 4+ letras) como términos
+/// adicionales, sin duplicar las claves explícitas.
+fn name_terms(name: &str, description: &Option<String>) -> Vec<String> {
+    let mut terms = Vec::new();
+    let mut corpus = name.to_string();
+    if let Some(description) = description {
+        corpus.push(' ');
+        corpus.push_str(description);
+    }
+    for word in fold_spanish(&corpus).split(|c: char| !c.is_alphanumeric()) {
+        if word.chars().count() >= 4 && !terms.contains(&word.to_string()) {
+            terms.push(word.to_string());
+        }
+    }
+    terms.into_iter().take(MAX_KEYWORDS).collect()
+}
+
+/// Minúsculas sin tildes para comparar texto en español sin dependencias.
+fn fold_spanish(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|c| match c {
+            'á' | 'à' | 'ä' | 'â' => 'a',
+            'é' | 'è' | 'ë' | 'ê' => 'e',
+            'í' | 'ì' | 'ï' | 'î' => 'i',
+            'ó' | 'ò' | 'ö' | 'ô' => 'o',
+            'ú' | 'ù' | 'ü' | 'û' => 'u',
+            'ñ' => 'n',
+            'ç' => 'c',
+            _ => c,
+        })
         .collect()
 }
 
@@ -443,6 +482,22 @@ mod tests {
                 .reasons
                 .iter()
                 .any(|reason| reason.contains("src/api")));
+        });
+    }
+
+    #[test]
+    fn matching_ignores_accents_and_uses_the_role_name() {
+        let pool = test_pool();
+        tauri::async_runtime::block_on(async {
+            sample_role(&pool, "Base de datos", "esquema", "").await;
+
+            // «migracion» sin tilde encaja con la clave «migración»; «datos»
+            // viene del nombre del rol aunque no esté en las claves.
+            let suggestions = recommend(&pool, "Migracion inicial", "Crear la base de datos", "")
+                .await
+                .expect("recommendation should load");
+            assert!(!suggestions.is_empty());
+            assert_eq!(suggestions[0].role.name, "Base de datos");
         });
     }
 

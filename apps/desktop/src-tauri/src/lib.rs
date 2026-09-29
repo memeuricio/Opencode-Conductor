@@ -615,6 +615,37 @@ async fn return_task_handoff(
 }
 
 #[tauri::command]
+async fn check_worktree_bridge_tools(
+    base_url: String,
+    username: String,
+    password: String,
+    worktree_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<opencode::McpServerStatus, String> {
+    let worktree = worktrees::get_by_id(&database.pool, worktree_id).await?;
+    opencode::mcp_server_status(&base_url, &username, &password, &worktree.directory).await
+}
+
+#[tauri::command]
+async fn nudge_task(
+    base_url: String,
+    username: String,
+    password: String,
+    task_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<coordination::Task, String> {
+    dispatch::nudge_task(
+        &database.pool,
+        &database.worktrees_root,
+        &base_url,
+        &username,
+        &password,
+        task_id,
+    )
+    .await
+}
+
+#[tauri::command]
 async fn answer_task_decision(
     base_url: String,
     username: String,
@@ -746,6 +777,8 @@ pub fn run() {
             start_ready_project_tasks,
             accept_task_handoff,
             return_task_handoff,
+            check_worktree_bridge_tools,
+            nudge_task,
             answer_task_decision,
             complete_task_manually,
             fail_task,

@@ -151,6 +151,12 @@ pub async fn start_task(
     // 2. Configuración del puente de herramientas para este proyecto.
     write_project_bridge_config(worktrees_root, task.project_id, bridge)?;
 
+    // 2b. Puerta anti-tareas-colgadas: si OpenCode no conecta el puente para
+    // este worktree, el agente nunca vería las herramientas y la tarea quedaría
+    // colgada al terminar. Se falla aquí, con mensaje accionable, en lugar de
+    // gastar el turno del modelo.
+    opencode::wait_for_mcp_connected(base_url, username, password, &worktree.directory).await?;
+
     // 3. Sesión OpenCode en la ruta exacta del worktree.
     let session_id = match worktree.opencode_session_id.as_deref() {
         Some(session_id) => {
@@ -302,6 +308,43 @@ pub async fn return_handoff_with_note(
     coordination::return_handoff(pool, handoff_id, note).await
 }
 
+/// Pide al agente en curso que entregue: le envía un mensaje a su sesión para
+/// que commitee y registre la entrega. Salida para tareas cuyo agente terminó
+/// en silencio sin llamar a las herramientas de coordinación.
+pub async fn nudge_task(
+    pool: &sqlx::SqlitePool,
+    worktrees_root: &Path,
+    base_url: &str,
+    username: &str,
+    password: &str,
+    task_id: i64,
+) -> Result<coordination::Task, String> {
+    let task = coordination::get(pool, task_id).await?;
+    if !matches!(
+        task.status.as_str(),
+        coordination::STATUS_WORKING | coordination::STATUS_BLOCKED | coordination::STATUS_REVIEW
+    ) {
+        return Err(
+            "Solo se puede pedir entrega de tareas en curso, bloqueadas o en revisión".to_string(),
+        );
+    }
+    send_to_task_session(
+        pool,
+        worktrees_root,
+        base_url,
+        username,
+        password,
+        &task,
+        "El usuario te pide un avance de la tarea: guarda tu trabajo con un commit dentro de este \
+         worktree y registra la entrega con la herramienta submit_handoff (resumen, artefactos e \
+         instrucciones para el siguiente rol) o cierra con complete_task si no dejas trabajo pendiente. \
+         Sin esa llamada el coordinador no sabe que terminaste.",
+    )
+    .await?;
+    coordination::record_note(pool, task_id, "nudge_sent", "Se pidió entrega al agente").await?;
+    coordination::get(pool, task_id).await
+}
+
 pub async fn answer_decision_with_prompt(
     pool: &sqlx::SqlitePool,
     worktrees_root: &Path,
@@ -397,7 +440,7 @@ pub fn build_task_prompt(
         }
     ));
     prompt.push_str(
-        "\nTrabaja únicamente dentro de este worktree. No modifiques otros entornos ni el checkout principal.\n",
+        "\nTrabaja únicamente dentro de este worktree. No modifiques otros entornos ni el checkout principal.\nGuarda tu trabajo con commits dentro de este worktree; la revisión necesita los cambios commiteados, no basta con dejarlos en el directorio.\n",
     );
 
     if !context.is_empty() {
@@ -447,7 +490,7 @@ pub fn build_task_prompt(
          - complete_task: marca la tarea como terminada si no dejas trabajo para otro rol.\n\
          - report_blocker: registra un bloqueo técnico.\n\
          - request_user_input: pide una decisión al usuario y espera su respuesta.\n\
-         \nAl terminar, usa la herramienta de entrega correspondiente y detén el trabajo: el usuario revisa la entrega antes de continuar.\n",
+         \nAl terminar, usa OBLIGATORIAMENTE la herramienta de entrega correspondiente (submit_handoff o complete_task) y detén el trabajo: sin esa llamada el coordinador no sabe que terminaste y la tarea queda colgada. El usuario revisa la entrega antes de continuar.\n",
     );
 
     if prompt.chars().count() > MAX_PROMPT_CHARS {

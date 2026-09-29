@@ -30,6 +30,7 @@ const KIND_LABELS: Record<string, string> = {
   working: "Trabajo iniciado",
   dispatched: "Prompt enviado al agente",
   dispatch_failed: "Falló el envío del prompt",
+  nudge_sent: "Entrega pedida al agente",
   fallback_applied: "Modelo alternativo aplicado",
   handoff_submitted: "Entrega registrada por el agente",
   handoff_accepted: "Entrega aceptada",
