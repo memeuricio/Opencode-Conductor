@@ -674,8 +674,8 @@ pub async fn check_connection(
     })
 }
 
-const CATALOG_READY_RETRIES: usize = 8;
-const CATALOG_READY_DELAY: Duration = Duration::from_millis(400);
+const CATALOG_READY_RETRIES: usize = 14;
+const CATALOG_READY_DELAY: Duration = Duration::from_millis(750);
 
 pub async fn discover_catalog(
     base_url: &str,
