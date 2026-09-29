@@ -100,6 +100,12 @@ interface ProjectOption {
   isGitRepository: boolean;
 }
 
+interface WorkspaceOption {
+  id: number;
+  name: string;
+  projectIds: number[];
+}
+
 interface AgentOption {
   id: string;
   name: string;
@@ -117,6 +123,7 @@ interface TasksPageProps {
   password: string;
   connected: boolean;
   projects: ProjectOption[];
+  workspaces: WorkspaceOption[];
   agents: AgentOption[];
   models: ModelOption[];
 }
@@ -201,6 +208,7 @@ export default function TasksPage({
   password,
   connected,
   projects,
+  workspaces,
   agents,
   models,
 }: TasksPageProps) {
@@ -208,6 +216,14 @@ export default function TasksPage({
     () => projects.filter((project) => project.archivedAt === null),
     [projects],
   );
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | null>(null);
+  const visibleProjects = useMemo(() => {
+    if (selectedWorkspaceId === null) return activeProjects;
+    const workspace = workspaces.find((entry) => entry.id === selectedWorkspaceId);
+    if (!workspace) return activeProjects;
+    return activeProjects.filter((project) => workspace.projectIds.includes(project.id));
+  }, [activeProjects, workspaces, selectedWorkspaceId]);
+  const selectedWorkspace = workspaces.find((entry) => entry.id === selectedWorkspaceId) ?? null;
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [tasks, setTasks] = useState<TaskDetail[] | null>(null);
   const [tasksError, setTasksError] = useState<string | null>(null);
@@ -225,8 +241,10 @@ export default function TasksPage({
   const [returnDrafts, setReturnDrafts] = useState<Record<number, string>>({});
   const [closureDrafts, setClosureDrafts] = useState<Record<number, string>>({});
 
-  const projectId = selectedProjectId ?? activeProjects[0]?.id ?? null;
-  const selectedProject = activeProjects.find((project) => project.id === projectId) ?? null;
+  const projectId = selectedProjectId !== null && visibleProjects.some((project) => project.id === selectedProjectId)
+    ? selectedProjectId
+    : visibleProjects[0]?.id ?? null;
+  const selectedProject = visibleProjects.find((project) => project.id === projectId) ?? null;
 
   function emptyForm(): TaskFormState {
     return {
@@ -437,6 +455,31 @@ export default function TasksPage({
     });
   }
 
+  function startReadyWorkspaceTasks() {
+    if (selectedWorkspaceId === null) return;
+    if (!window.confirm(`¿Lanzar las tareas listas de todos los proyectos del espacio «${selectedWorkspace?.name}»? Puede arrancar varios agentes a la vez.`)) return;
+    return runAction(`start-ready-workspace-${selectedWorkspaceId}`, async () => {
+      const outcomes = await invoke<DispatchOutcome[]>("start_ready_workspace_tasks", {
+        baseUrl,
+        username,
+        password,
+        workspaceId: selectedWorkspaceId,
+      });
+      if (outcomes.length === 0) {
+        return "No hay tareas listas para lanzar en este espacio.";
+      }
+      const failed = outcomes.filter((outcome) => !outcome.ok);
+      if (failed.length === 0) {
+        return `${outcomes.length} ${outcomes.length === 1 ? "tarea lanzada" : "tareas lanzadas"} en el espacio.`;
+      }
+      throw new Error(
+        failed
+          .map((outcome) => `#${outcome.taskId}: ${outcome.error ?? "no se pudo lanzar"}`)
+          .join(" · "),
+      );
+    });
+  }
+
   function acceptHandoff(handoff: Handoff, andContinue: boolean) {
     return runAction(`accept-${handoff.id}`, async () => {
       await invoke("accept_task_handoff", { handoffId: handoff.id });
@@ -542,18 +585,36 @@ export default function TasksPage({
 
       <div className="tasks-toolbar panel">
         <div className="tasks-toolbar-row">
+          {workspaces.length > 0 && (
+            <label className="tasks-project-select">
+              <span>Espacio</span>
+              <select
+                value={selectedWorkspaceId ?? ""}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setSelectedWorkspaceId(value === "" ? null : Number(value));
+                  setSelectedProjectId(null);
+                }}
+              >
+                <option value="">Todos los proyectos</option>
+                {workspaces.map((workspace) => (
+                  <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="tasks-project-select">
-            <span>Proyecto</span>
+            <span>Proyecto{selectedWorkspace ? ` · ${selectedWorkspace.name}` : ""}</span>
             <select
               value={projectId ?? ""}
               onChange={(event) => {
                 const value = event.currentTarget.value;
                 setSelectedProjectId(value === "" ? null : Number(value));
               }}
-              disabled={activeProjects.length === 0}
+              disabled={visibleProjects.length === 0}
             >
-              {activeProjects.length === 0 && <option value="">Sin proyectos activos</option>}
-              {activeProjects.map((project) => (
+              {visibleProjects.length === 0 && <option value="">Sin proyectos en este espacio</option>}
+              {visibleProjects.map((project) => (
                 <option key={project.id} value={project.id}>{project.name}</option>
               ))}
             </select>
@@ -567,6 +628,17 @@ export default function TasksPage({
             >
               {busyKey === `start-ready-${projectId}` ? "Lanzando…" : `Lanzar tareas listas${readyCount ? ` (${readyCount})` : ""}`}
             </button>
+            {selectedWorkspaceId !== null && (
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => void startReadyWorkspaceTasks()}
+                disabled={!canDispatch || busyKey === `start-ready-workspace-${selectedWorkspaceId}`}
+                title="Lanza las tareas listas de todos los proyectos del espacio"
+              >
+                {busyKey === `start-ready-workspace-${selectedWorkspaceId}` ? "Lanzando espacio…" : "Lanzar espacio"}
+              </button>
+            )}
             <button
               className="secondary-button"
               type="button"

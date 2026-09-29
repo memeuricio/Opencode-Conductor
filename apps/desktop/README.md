@@ -37,6 +37,12 @@ El agente dispone de `stade_get_task_context`, `stade_submit_handoff`, `stade_co
 
 Si reinicias la app con el servidor OpenCode ya abierto, reinicia también el servidor o usa **Regenerar configuración** en la página Tareas para que tome el token vigente.
 
+## Espacios
+
+Los **Espacios** agrupan proyectos que trabajan juntos (p. ej. "App finanzas" con base de datos, backend y frontend). La relación es de muchos a muchos: un backend compartido puede estar en dos espacios a la vez. El espacio es solo una lente de agrupación y acción: los worktrees, sesiones, tareas y `opencode.json` siguen perteneciendo a cada proyecto, y el puente MCP no cambia.
+
+En **Proyectos** puedes crear, renombrar, archivar y eliminar espacios (eliminar solo borra la agrupación, nunca los proyectos), filtrar la lista por espacio y asignar cada proyecto con casillas. En **Tareas** el selector de espacio filtra el proyecto y el botón **Lanzar espacio** (con confirmación) lanza las tareas listas de todos sus proyectos, agregando los resultados.
+
 ## Comprobaciones
 
 ```powershell

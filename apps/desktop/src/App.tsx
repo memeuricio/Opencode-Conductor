@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDirectoryDialog } from "@tauri-apps/plugin-dialog";
@@ -54,6 +54,16 @@ interface Project {
   description: string | null;
   rootPath: string;
   isGitRepository: boolean;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+}
+
+interface Workspace {
+  id: number;
+  name: string;
+  description: string | null;
+  projectIds: number[];
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
@@ -128,6 +138,16 @@ function App() {
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [showArchivedProjects, setShowArchivedProjects] = useState(false);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [workspacesLoading, setWorkspacesLoading] = useState(true);
+  const [workspaceFilter, setWorkspaceFilter] = useState<number | "none" | null>(null);
+  const [showArchivedWorkspaces, setShowArchivedWorkspaces] = useState(false);
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [editingWorkspaceId, setEditingWorkspaceId] = useState<number | null>(null);
+  const [editingWorkspaceName, setEditingWorkspaceName] = useState("");
+  const [membershipBusyKey, setMembershipBusyKey] = useState<string | null>(null);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [projectForm, setProjectForm] = useState<ProjectForm>({ name: "", rootPath: "", description: "" });
@@ -182,7 +202,143 @@ function App() {
 
   useEffect(() => {
     void refreshProjects(false);
+    void refreshWorkspaces(false);
   }, []);
+
+  async function refreshWorkspaces(includeArchived: boolean) {
+    setWorkspacesLoading(true);
+    setWorkspaceError(null);
+    try {
+      const result = await invoke<Workspace[]>("list_workspaces", { includeArchived });
+      setWorkspaces(result);
+    } catch (error) {
+      setWorkspaceError(String(error));
+    } finally {
+      setWorkspacesLoading(false);
+    }
+  }
+
+  async function createWorkspace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!newWorkspaceName.trim()) return;
+    setWorkspaceBusy(true);
+    setWorkspaceError(null);
+    try {
+      const created = await invoke<Workspace>("create_workspace", {
+        name: newWorkspaceName,
+        description: null,
+      });
+      setNewWorkspaceName("");
+      await refreshWorkspaces(showArchivedWorkspaces);
+      setWorkspaceFilter(created.id);
+    } catch (error) {
+      setWorkspaceError(String(error));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function renameWorkspace(workspace: Workspace) {
+    if (!editingWorkspaceName.trim()) return;
+    setWorkspaceBusy(true);
+    setWorkspaceError(null);
+    try {
+      await invoke<Workspace>("update_workspace", {
+        workspaceId: workspace.id,
+        name: editingWorkspaceName,
+        description: workspace.description,
+      });
+      setEditingWorkspaceId(null);
+      await refreshWorkspaces(showArchivedWorkspaces);
+    } catch (error) {
+      setWorkspaceError(String(error));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function toggleWorkspaceArchived(workspace: Workspace) {
+    setWorkspaceBusy(true);
+    setWorkspaceError(null);
+    try {
+      await invoke<Workspace>("set_workspace_archived", {
+        workspaceId: workspace.id,
+        archived: workspace.archivedAt === null,
+      });
+      if (workspaceFilter === workspace.id) setWorkspaceFilter(null);
+      await refreshWorkspaces(showArchivedWorkspaces);
+    } catch (error) {
+      setWorkspaceError(String(error));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function deleteWorkspace(workspace: Workspace) {
+    if (!window.confirm(`¿Eliminar el espacio «${workspace.name}»? Los proyectos se conservan; solo se borra la agrupación.`)) return;
+    setWorkspaceBusy(true);
+    setWorkspaceError(null);
+    try {
+      await invoke("delete_workspace", { workspaceId: workspace.id });
+      if (workspaceFilter === workspace.id) setWorkspaceFilter(null);
+      await refreshWorkspaces(showArchivedWorkspaces);
+    } catch (error) {
+      setWorkspaceError(String(error));
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  }
+
+  async function toggleProjectMembership(workspace: Workspace, projectId: number) {
+    const member = workspace.projectIds.includes(projectId);
+    setMembershipBusyKey(`${workspace.id}-${projectId}`);
+    setWorkspaceError(null);
+    try {
+      await invoke<Workspace>(member ? "remove_workspace_project" : "add_workspace_project", {
+        workspaceId: workspace.id,
+        projectId,
+      });
+      await refreshWorkspaces(showArchivedWorkspaces);
+    } catch (error) {
+      setWorkspaceError(String(error));
+    } finally {
+      setMembershipBusyKey(null);
+    }
+  }
+
+  const activeWorkspaces = useMemo(
+    () => workspaces.filter((workspace) => workspace.archivedAt === null),
+    [workspaces],
+  );
+  const visibleWorkspaces = useMemo(
+    () => workspaces.filter((workspace) => showArchivedWorkspaces || workspace.archivedAt === null),
+    [workspaces, showArchivedWorkspaces],
+  );
+  const selectedWorkspace = useMemo(
+    () => typeof workspaceFilter === "number"
+      ? workspaces.find((workspace) => workspace.id === workspaceFilter) ?? null
+      : null,
+    [workspaces, workspaceFilter],
+  );
+  const workspaceNamesForProject = useCallback(
+    (projectId: number) => activeWorkspaces
+      .filter((workspace) => workspace.projectIds.includes(projectId))
+      .map((workspace) => workspace.name),
+    [activeWorkspaces],
+  );
+  const visibleProjects = useMemo(
+    () => projects.filter((project) => {
+      if (!showArchivedProjects && project.archivedAt !== null) return false;
+      if (workspaceFilter === "none") {
+        return !activeWorkspaces.some((workspace) => workspace.projectIds.includes(project.id));
+      }
+      if (typeof workspaceFilter === "number") {
+        return selectedWorkspace?.projectIds.includes(project.id) ?? false;
+      }
+      return true;
+    }),
+    [projects, showArchivedProjects, workspaceFilter, activeWorkspaces, selectedWorkspace],
+  );
 
   useEffect(() => {
     if (managedServerState !== "running") return;
@@ -991,8 +1147,27 @@ function App() {
             </div>
 
             <div className="projects-toolbar">
-              <span>{projectsLoading ? "Cargando proyectos…" : `${projects.filter((project) => project.archivedAt === null).length} proyectos activos`}</span>
+              <span>{projectsLoading ? "Cargando proyectos…" : `${visibleProjects.length} ${visibleProjects.length === 1 ? "proyecto visible" : "proyectos visibles"}`}</span>
               <div className="projects-toolbar-actions">
+                <label className="workspace-filter">
+                  <span>Espacio</span>
+                  <select
+                    value={workspaceFilter === null ? "" : workspaceFilter === "none" ? "none" : String(workspaceFilter)}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setWorkspaceFilter(value === "" ? null : value === "none" ? "none" : Number(value));
+                    }}
+                    disabled={workspacesLoading}
+                  >
+                    <option value="">Todos los espacios</option>
+                    <option value="none">Sin espacio</option>
+                    {visibleWorkspaces.map((workspace) => (
+                      <option key={workspace.id} value={workspace.id}>
+                        {workspace.name}{workspace.archivedAt ? " (archivado)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <label className="archived-toggle">
                   <input
                     type="checkbox"
@@ -1005,26 +1180,117 @@ function App() {
                   />
                   <span>Incluir archivados</span>
                 </label>
-                <button className="secondary-button" type="button" onClick={() => void refreshProjects(showArchivedProjects)} disabled={projectsLoading}>
+                <button className="secondary-button" type="button" onClick={() => { void refreshProjects(showArchivedProjects); void refreshWorkspaces(showArchivedWorkspaces); }} disabled={projectsLoading}>
                   Actualizar
                 </button>
               </div>
+            </div>
+
+            <div className="workspaces-panel panel">
+              <div className="workspaces-panel-header">
+                <div>
+                  <p className="eyebrow">AGRUPACIÓN LOCAL</p>
+                  <h3>Espacios</h3>
+                  <p>Agrupa proyectos que trabajan juntos (p. ej. base de datos, backend y frontend de una app). Un proyecto puede vivir en varios espacios a la vez.</p>
+                </div>
+                <label className="archived-toggle">
+                  <input
+                    type="checkbox"
+                    checked={showArchivedWorkspaces}
+                    onChange={(event) => {
+                      const includeArchived = event.currentTarget.checked;
+                      setShowArchivedWorkspaces(includeArchived);
+                      void refreshWorkspaces(includeArchived);
+                    }}
+                  />
+                  <span>Incluir archivados</span>
+                </label>
+              </div>
+              {workspaceError && <p className="worktree-inline-error" role="alert">{workspaceError}</p>}
+              <form className="workspace-create-row" onSubmit={createWorkspace}>
+                <input
+                  value={newWorkspaceName}
+                  onChange={(event) => setNewWorkspaceName(event.currentTarget.value)}
+                  placeholder="Nuevo espacio, p. ej. App finanzas"
+                  maxLength={100}
+                  aria-label="Nombre del nuevo espacio"
+                />
+                <button className="secondary-button" type="submit" disabled={workspaceBusy || !newWorkspaceName.trim()}>
+                  {workspaceBusy ? "Guardando…" : "Crear espacio"}
+                </button>
+              </form>
+              {workspacesLoading ? (
+                <p className="worktree-list-empty">Cargando espacios…</p>
+              ) : visibleWorkspaces.length === 0 ? (
+                <p className="worktree-list-empty">Aún no hay espacios. Crea el primero para agrupar tus proyectos.</p>
+              ) : (
+                <div className="workspace-list">
+                  {visibleWorkspaces.map((workspace) => (
+                    <div className={`workspace-item ${workspace.archivedAt ? "workspace-archived" : ""}`} key={workspace.id}>
+                      <button
+                        className={`workspace-name-button ${workspaceFilter === workspace.id ? "active" : ""}`}
+                        type="button"
+                        onClick={() => setWorkspaceFilter((current) => current === workspace.id ? null : workspace.id)}
+                        title="Filtrar proyectos por este espacio"
+                      >
+                        <strong>{workspace.name}</strong>
+                        <span>{workspace.projectIds.length} {workspace.projectIds.length === 1 ? "proyecto" : "proyectos"}</span>
+                      </button>
+                      {editingWorkspaceId === workspace.id ? (
+                        <form
+                          className="workspace-rename-row"
+                          onSubmit={(event) => { event.preventDefault(); void renameWorkspace(workspace); }}
+                        >
+                          <input
+                            value={editingWorkspaceName}
+                            onChange={(event) => setEditingWorkspaceName(event.currentTarget.value)}
+                            maxLength={100}
+                            aria-label="Nuevo nombre del espacio"
+                          />
+                          <button className="project-action-button" type="submit" disabled={workspaceBusy}>Guardar</button>
+                          <button className="project-action-button" type="button" onClick={() => setEditingWorkspaceId(null)}>Cancelar</button>
+                        </form>
+                      ) : (
+                        <div className="workspace-item-actions">
+                          {!workspace.archivedAt && (
+                            <button
+                              className="project-action-button"
+                              type="button"
+                              onClick={() => { setEditingWorkspaceId(workspace.id); setEditingWorkspaceName(workspace.name); }}
+                            >
+                              Renombrar
+                            </button>
+                          )}
+                          <button className="project-action-button" type="button" onClick={() => void toggleWorkspaceArchived(workspace)} disabled={workspaceBusy}>
+                            {workspace.archivedAt ? "Restaurar" : "Archivar"}
+                          </button>
+                          <button className="project-action-button" type="button" onClick={() => void deleteWorkspace(workspace)} disabled={workspaceBusy}>
+                            Eliminar
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {projectsError && <div className="feedback error-feedback project-list-error" role="alert"><span className="feedback-icon">!</span><div><strong>Error con proyectos</strong><span>{projectsError}</span></div></div>}
 
             {projectsLoading ? (
               <div className="project-empty-state">Cargando la lista local…</div>
-            ) : projects.filter((project) => showArchivedProjects || project.archivedAt === null).length === 0 ? (
+            ) : visibleProjects.length === 0 ? (
               <div className="project-empty-state">
                 <span className="empty-folder-icon" aria-hidden="true">▱</span>
-                <h2>{showArchivedProjects ? "Todavía no hay proyectos" : "Aún no has añadido proyectos"}</h2>
-                <p>Elige la carpeta raíz de un proyecto. La app solo registra la ruta; no copia ni modifica archivos.</p>
-                <button className="secondary-button" type="button" onClick={() => openProjectDialog()}>Añadir primer proyecto</button>
+                <h2>{workspaceFilter === null ? (showArchivedProjects ? "Todavía no hay proyectos" : "Aún no has añadido proyectos") : "Ningún proyecto en este espacio"}</h2>
+                <p>{workspaceFilter === null
+                  ? "Elige la carpeta raíz de un proyecto. La app solo registra la ruta; no copia ni modifica archivos."
+                  : "Añade proyectos a este espacio desde el desplegable «Espacios» de cada tarjeta."}</p>
+                {workspaceFilter === null && <button className="secondary-button" type="button" onClick={() => openProjectDialog()}>Añadir primer proyecto</button>}
               </div>
             ) : (
               <div className="project-list">
-                {projects.filter((project) => showArchivedProjects || project.archivedAt === null).map((project) => (
+                {visibleProjects.map((project) => (
                   <article className={`project-card ${project.archivedAt ? "project-archived" : ""}`} key={project.id}>
                     <div className="project-card-symbol" aria-hidden="true"><span className="folder-icon" /></div>
                     <div className="project-card-content">
@@ -1037,6 +1303,24 @@ function App() {
                       </div>
                       <code className="project-root-path">{project.rootPath}</code>
                       <p className="project-description">{project.description || "Sin descripción"}</p>
+                      {workspaceNamesForProject(project.id).length > 0 && (
+                        <div className="workspace-chips" aria-label="Espacios del proyecto">
+                          {workspaceNamesForProject(project.id).map((name) => (
+                            <button
+                              key={name}
+                              className="workspace-chip"
+                              type="button"
+                              onClick={() => {
+                                const target = activeWorkspaces.find((workspace) => workspace.name === name);
+                                if (target) setWorkspaceFilter(target.id);
+                              }}
+                              title="Filtrar por este espacio"
+                            >
+                              {name}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div className="project-card-actions">
                       {!project.archivedAt && <button className="project-action-button" type="button" onClick={() => openProjectDialog(project)}>Editar</button>}
@@ -1047,6 +1331,32 @@ function App() {
                         {projectBusyId === project.id ? "Guardando…" : project.archivedAt ? "Restaurar" : "Archivar"}
                       </button>
                     </div>
+                    {!project.archivedAt && (
+                      <details className="workspace-membership">
+                        <summary>Espacios ({workspaceNamesForProject(project.id).length})</summary>
+                        {activeWorkspaces.length === 0 ? (
+                          <p className="worktree-inline-note">Crea un espacio arriba para agrupar este proyecto.</p>
+                        ) : (
+                          <div className="workspace-membership-list">
+                            {activeWorkspaces.map((workspace) => {
+                              const member = workspace.projectIds.includes(project.id);
+                              const busy = membershipBusyKey === `${workspace.id}-${project.id}`;
+                              return (
+                                <label className="workspace-membership-option" key={workspace.id}>
+                                  <input
+                                    type="checkbox"
+                                    checked={member}
+                                    disabled={busy}
+                                    onChange={() => void toggleProjectMembership(workspace, project.id)}
+                                  />
+                                  <span>{workspace.name}{busy ? "…" : ""}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </details>
+                    )}
                     {expandedProjectId === project.id && (
                       <div className="project-worktrees-panel">
                         <div className="worktrees-panel-header">
@@ -1195,6 +1505,11 @@ function App() {
             password={password}
             connected={connection.kind === "connected"}
             projects={projects}
+            workspaces={activeWorkspaces.map((workspace) => ({
+              id: workspace.id,
+              name: workspace.name,
+              projectIds: workspace.projectIds,
+            }))}
             agents={selectableAgents}
             models={selectableModels}
           />

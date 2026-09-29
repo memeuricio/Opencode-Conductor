@@ -8,6 +8,7 @@ mod projects;
 mod sessions;
 mod storage;
 mod usage;
+mod workspaces;
 mod worktrees;
 
 use tauri::{Emitter, Manager, State};
@@ -255,6 +256,103 @@ async fn list_project_tasks(
     coordination::list_project(&database.pool, project_id).await
 }
 
+#[tauri::command]
+async fn list_workspaces(
+    include_archived: bool,
+    database: State<'_, storage::Database>,
+) -> Result<Vec<workspaces::Workspace>, String> {
+    workspaces::list(&database.pool, include_archived).await
+}
+
+#[tauri::command]
+async fn create_workspace(
+    name: String,
+    description: Option<String>,
+    database: State<'_, storage::Database>,
+) -> Result<workspaces::Workspace, String> {
+    workspaces::create(&database.pool, name, description).await
+}
+
+#[tauri::command]
+async fn update_workspace(
+    workspace_id: i64,
+    name: String,
+    description: Option<String>,
+    database: State<'_, storage::Database>,
+) -> Result<workspaces::Workspace, String> {
+    workspaces::update(&database.pool, workspace_id, name, description).await
+}
+
+#[tauri::command]
+async fn set_workspace_archived(
+    workspace_id: i64,
+    archived: bool,
+    database: State<'_, storage::Database>,
+) -> Result<workspaces::Workspace, String> {
+    workspaces::set_archived(&database.pool, workspace_id, archived).await
+}
+
+#[tauri::command]
+async fn delete_workspace(
+    workspace_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<(), String> {
+    workspaces::delete(&database.pool, workspace_id).await
+}
+
+#[tauri::command]
+async fn add_workspace_project(
+    workspace_id: i64,
+    project_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<workspaces::Workspace, String> {
+    workspaces::add_project(&database.pool, workspace_id, project_id).await
+}
+
+#[tauri::command]
+async fn remove_workspace_project(
+    workspace_id: i64,
+    project_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<workspaces::Workspace, String> {
+    workspaces::remove_project(&database.pool, workspace_id, project_id).await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn start_ready_workspace_tasks(
+    base_url: String,
+    username: String,
+    password: String,
+    workspace_id: i64,
+    database: State<'_, storage::Database>,
+    bridge: State<'_, bridge::BridgeManager>,
+) -> Result<Vec<dispatch::DispatchOutcome>, String> {
+    let endpoint = bridge
+        .current()
+        .await
+        .ok_or_else(|| "El puente local de herramientas no está activo".to_string())?;
+    // Las tareas y worktrees pertenecen a cada proyecto; el espacio solo
+    // agrupa. Se reutiliza el lanzamiento por proyecto y se agregan resultados.
+    let project_ids = workspaces::active_project_ids(&database.pool, workspace_id).await?;
+    let mut outcomes = Vec::new();
+    for project_id in project_ids {
+        outcomes.extend(
+            dispatch::start_ready_tasks(
+                &database.pool,
+                &database.worktrees_root,
+                &base_url,
+                &username,
+                &password,
+                &endpoint,
+                project_id,
+            )
+            .await?,
+        );
+    }
+    Ok(outcomes)
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn create_task(
@@ -480,6 +578,14 @@ pub fn run() {
             refresh_worktree_session,
             reply_to_worktree_permission,
             bridge_status,
+            list_workspaces,
+            create_workspace,
+            update_workspace,
+            set_workspace_archived,
+            delete_workspace,
+            add_workspace_project,
+            remove_workspace_project,
+            start_ready_workspace_tasks,
             list_project_tasks,
             create_task,
             update_task_definition,
