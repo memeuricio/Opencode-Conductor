@@ -114,6 +114,34 @@ interface EventStreamStatus {
   message: string | null;
 }
 
+interface IntegrationFile {
+  status: string;
+  path: string;
+}
+
+interface IntegrationPreview {
+  worktreeId: number;
+  label: string;
+  branch: string;
+  targetBranch: string;
+  ahead: number;
+  behind: number;
+  worktreeClean: boolean;
+  mainClean: boolean;
+  files: IntegrationFile[];
+  filesTruncated: boolean;
+  diff: string;
+  diffTruncated: boolean;
+}
+
+interface IntegrationOutcome {
+  worktreeId: number;
+  branch: string;
+  targetBranch: string;
+  commit: string;
+  files: IntegrationFile[];
+}
+
 type ConnectionState =
   | { kind: "idle" }
   | { kind: "checking" }
@@ -171,6 +199,12 @@ function App() {
   const [taskPrompt, setTaskPrompt] = useState("");
   const [taskSending, setTaskSending] = useState(false);
   const [taskFormError, setTaskFormError] = useState<string | null>(null);
+  const [integrationWorktree, setIntegrationWorktree] = useState<Worktree | null>(null);
+  const [integrationPreview, setIntegrationPreview] = useState<IntegrationPreview | null>(null);
+  const [integrationLoading, setIntegrationLoading] = useState(false);
+  const [integrationError, setIntegrationError] = useState<string | null>(null);
+  const [integrationNotice, setIntegrationNotice] = useState<string | null>(null);
+  const [integrating, setIntegrating] = useState(false);
   const [taskSnapshots, setTaskSnapshots] = useState<Record<number, SessionSnapshot>>({});
   const [taskSnapshotLoadingId, setTaskSnapshotLoadingId] = useState<number | null>(null);
   const [taskSnapshotErrors, setTaskSnapshotErrors] = useState<Record<number, string>>({});
@@ -632,6 +666,65 @@ function App() {
     setTaskFormError(null);
   }
 
+  function fileStatusLabel(status: string) {
+    const kind = status.charAt(0).toUpperCase();
+    if (kind === "A") return "AÑADIDO";
+    if (kind === "M") return "MODIFICADO";
+    if (kind === "D") return "ELIMINADO";
+    if (kind === "R") return "RENOMBRADO";
+    if (kind === "C") return "COPIADO";
+    return `CAMBIO ${kind}`;
+  }
+
+  async function loadIntegrationPreview(worktree: Worktree) {
+    setIntegrationLoading(true);
+    setIntegrationError(null);
+    try {
+      const preview = await invoke<IntegrationPreview>("preview_worktree_integration", {
+        worktreeId: worktree.id,
+      });
+      setIntegrationPreview(preview);
+    } catch (error) {
+      setIntegrationPreview(null);
+      setIntegrationError(String(error));
+    } finally {
+      setIntegrationLoading(false);
+    }
+  }
+
+  function openIntegrationDialog(worktree: Worktree) {
+    setIntegrationWorktree(worktree);
+    setIntegrationPreview(null);
+    setIntegrationError(null);
+    setIntegrationNotice(null);
+    void loadIntegrationPreview(worktree);
+  }
+
+  async function integrateWorktree() {
+    if (!integrationWorktree || !integrationPreview) return;
+    if (!window.confirm(
+      `¿Integrar la rama ${integrationPreview.branch} en ${integrationPreview.targetBranch}? ` +
+      "El repositorio principal debe estar limpio y la operación crea un commit de merge.",
+    )) return;
+    setIntegrating(true);
+    setIntegrationError(null);
+    setIntegrationNotice(null);
+    try {
+      const outcome = await invoke<IntegrationOutcome>("integrate_worktree", {
+        worktreeId: integrationWorktree.id,
+      });
+      setIntegrationNotice(
+        `Integrada en ${outcome.targetBranch} con el commit ${outcome.commit.slice(0, 7)}. ` +
+        "El entorno se conserva por si necesitas volver a su rama.",
+      );
+      await loadIntegrationPreview(integrationWorktree);
+    } catch (error) {
+      setIntegrationError(String(error));
+    } finally {
+      setIntegrating(false);
+    }
+  }
+
   async function sendTaskPrompt(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!taskDialogWorktree || connection.kind !== "connected") return;
@@ -1052,7 +1145,8 @@ function App() {
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Proyectos y worktrees Git</span></div>
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Sesión OpenCode por entorno</span></div>
               <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Tareas, permisos y entregas</span></div>
-              <div className="roadmap-item current"><span className="roadmap-pulse" /><span>Integración revisable de cambios</span><span className="roadmap-tag">SIGUIENTE</span></div>
+              <div className="roadmap-item done"><span className="roadmap-check">✓</span><span>Integración revisable de cambios</span></div>
+              <div className="roadmap-item current"><span className="roadmap-pulse" /><span>Roles y recomendación de modelo</span><span className="roadmap-tag">SIGUIENTE</span></div>
             </div>
             <div className="privacy-note"><span className="lock-icon" aria-hidden="true">▣</span> Tus proyectos permanecen en este equipo.</div>
           </aside>
@@ -1390,6 +1484,13 @@ function App() {
                                 <p className="worktree-branch">{worktree.branchName}</p>
                                 <code>{worktree.directory}</code>
                                 {worktree.lastError && <p className="worktree-inline-error">{worktree.lastError}</p>}
+                                {worktree.status === "ready" && (
+                                  <div className="worktree-integration-row">
+                                    <button className="secondary-button" type="button" onClick={() => openIntegrationDialog(worktree)}>
+                                      Revisar cambios
+                                    </button>
+                                  </div>
+                                )}
                                 {worktree.opencodeSessionId && (
                                   <div className="worktree-session-details">
                                     <div className="worktree-item-heading">
@@ -1708,6 +1809,79 @@ function App() {
                   </button>
                 </div>
               </form>
+            </section>
+          </div>
+        )}
+
+        {integrationWorktree && (
+          <div className="project-modal-backdrop">
+            <section className="project-modal integration-modal" role="dialog" aria-modal="true" aria-labelledby="integration-dialog-title">
+              <div className="project-modal-header">
+                <div>
+                  <p className="eyebrow">INTEGRACIÓN REVISABLE · {integrationWorktree.label}</p>
+                  <h2 id="integration-dialog-title">Revisar cambios del entorno</h2>
+                </div>
+                <button className="modal-close-button" type="button" onClick={() => setIntegrationWorktree(null)} aria-label="Cerrar" disabled={integrating}>×</button>
+              </div>
+
+              {integrationLoading && <p className="worktree-list-empty">Comparando la rama con el checkout principal…</p>}
+              {integrationError && <div className="project-form-error" role="alert">{integrationError}</div>}
+              {integrationNotice && <div className="feedback success-feedback" role="status" aria-live="polite"><span className="feedback-icon">✓</span><div><span>{integrationNotice}</span></div></div>}
+
+              {integrationPreview && (
+                <>
+                  <div className="integration-meta">
+                    <code className="integration-branches">{integrationPreview.branch} → {integrationPreview.targetBranch}</code>
+                    <span className="worktree-status status-ready">+{integrationPreview.ahead} COMMITS</span>
+                    {integrationPreview.behind > 0 && <span className="worktree-status status-waiting">RAMA BASE AVANZÓ {integrationPreview.behind}</span>}
+                    {!integrationPreview.worktreeClean && <span className="worktree-status status-failed">ENTORNO CON CAMBIOS SIN GUARDAR</span>}
+                    {!integrationPreview.mainClean && <span className="worktree-status status-failed">PRINCIPAL CON CAMBIOS SIN GUARDAR</span>}
+                  </div>
+
+                  {(!integrationPreview.worktreeClean || !integrationPreview.mainClean) && (
+                    <div className="integration-note" role="note">
+                      <p>Para proteger tus cambios locales, ambos lados deben estar limpios en Git antes de integrar. Guarda o descarta esos cambios y vuelve a abrir la revisión.</p>
+                    </div>
+                  )}
+                  {integrationPreview.ahead === 0 && (
+                    <div className="integration-note" role="note">
+                      <p>Esta rama no tiene commits por encima de la base: no hay nada que integrar.</p>
+                    </div>
+                  )}
+
+                  <div className="integration-files" aria-label="Archivos modificados">
+                    {integrationPreview.files.length === 0 ? (
+                      <p className="worktree-list-empty">Sin archivos modificados entre la base y la rama.</p>
+                    ) : (
+                      integrationPreview.files.map((file) => (
+                        <div className="integration-file" key={`${file.status}:${file.path}`}>
+                          <span className="integration-file-status">{fileStatusLabel(file.status)}</span>
+                          <code>{file.path}</code>
+                        </div>
+                      ))
+                    )}
+                    {integrationPreview.filesTruncated && <p className="worktree-inline-note">La lista muestra los primeros {integrationPreview.files.length} archivos.</p>}
+                  </div>
+
+                  {integrationPreview.diff && (
+                    <div className="integration-diff" aria-label="Diferencias">
+                      <pre>{integrationPreview.diff}</pre>
+                      {integrationPreview.diffTruncated && <p className="worktree-inline-note">Diff recortado para la vista; Git conserva el contenido completo.</p>}
+                    </div>
+                  )}
+
+                  <div className="integration-actions">
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={() => void integrateWorktree()}
+                      disabled={integrating || integrationLoading || !integrationPreview.mainClean || !integrationPreview.worktreeClean || integrationPreview.ahead === 0}
+                    >
+                      {integrating ? "Integrando…" : `Integrar en ${integrationPreview.targetBranch}`}
+                    </button>
+                  </div>
+                </>
+              )}
             </section>
           </div>
         )}

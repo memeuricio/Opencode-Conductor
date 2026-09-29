@@ -2,6 +2,7 @@ mod bridge;
 mod coordination;
 mod dispatch;
 mod events;
+mod integration;
 mod opencode;
 mod opencode_process;
 mod projects;
@@ -150,6 +151,22 @@ async fn create_project_worktree(
     database: State<'_, storage::Database>,
 ) -> Result<worktrees::Worktree, String> {
     worktrees::create(&database.pool, &database.worktrees_root, project_id, label).await
+}
+
+#[tauri::command]
+async fn preview_worktree_integration(
+    worktree_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<integration::IntegrationPreview, String> {
+    integration::preview(&database.pool, &database.worktrees_root, worktree_id).await
+}
+
+#[tauri::command]
+async fn integrate_worktree(
+    worktree_id: i64,
+    database: State<'_, storage::Database>,
+) -> Result<integration::IntegrationOutcome, String> {
+    integration::integrate(&database.pool, &database.worktrees_root, worktree_id).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -573,6 +590,8 @@ pub fn run() {
             set_project_archived,
             list_project_worktrees,
             create_project_worktree,
+            preview_worktree_integration,
+            integrate_worktree,
             create_worktree_session,
             send_worktree_prompt,
             refresh_worktree_session,

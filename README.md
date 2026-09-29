@@ -17,3 +17,5 @@ La app permite iniciar/detener el servidor OpenCode que ella misma lanzó, regis
 La página **Tareas** añade coordinación durable: plan con dependencias, una tarea por worktree, entregas revisables, preguntas al usuario y un puente MCP local con token por ejecución, cuya configuración se escribe junto a los worktrees administrados y nunca dentro de tu repositorio. La integración revisable de cambios sigue pendiente.
 
 Los **Espacios** agrupan proyectos que trabajan juntos (p. ej. base de datos, backend y frontend de una app); un proyecto compartido puede vivir en varios espacios. Filtran proyectos y tareas y permiten lanzar las tareas listas de todo el espacio. La timeline combinada por espacio sigue pendiente.
+
+Cada entorno Git (**Revisar cambios**) compara su rama contra el checkout principal y permite integrarla con un merge explícito y revisable, protegiendo cambios locales y abortando ante conflictos.

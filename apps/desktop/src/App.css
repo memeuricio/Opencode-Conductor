@@ -217,6 +217,21 @@ h2 { margin: 0; color: #eee9f3; font-size: 17px; font-weight: 600; letter-spacin
 .workspace-membership-list { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 9px; }
 .workspace-membership-option { display: inline-flex; align-items: center; gap: 7px; color: #6f6a73; font-size: 10px; cursor: pointer; }
 .workspace-membership-option input { width: 13px; height: 13px; margin: 0; accent-color: #7779bd; }
+.worktree-integration-row { display: flex; margin-top: 9px; }
+.worktree-integration-row .secondary-button { min-height: 30px; }
+.integration-modal { width: min(880px, 100%); }
+.integration-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.integration-branches { color: #615f91; font-family: Consolas, "Courier New", monospace; font-size: 10px; }
+.integration-note { margin-top: 10px; padding: 9px 11px; border: 1px solid #f0dfbd; border-radius: 8px; background: #fff8e9; }
+.integration-note p { margin: 0; color: #856b3b; font-size: 10px; line-height: 1.6; }
+.integration-files { display: grid; gap: 6px; max-height: 220px; margin-top: 12px; overflow: auto; padding-right: 3px; }
+.integration-file { display: flex; align-items: baseline; gap: 9px; min-width: 0; padding: 7px 10px; border: 1px solid #ece8e2; border-radius: 8px; background: #faf9f6; }
+.integration-file-status { flex: 0 0 auto; padding: 3px 7px; border: 1px solid #e5e2ef; border-radius: 10px; color: #5c5b88; background: #f1f0fa; font-size: 8px; }
+.integration-file code { overflow: hidden; color: #37353d; font-family: Consolas, "Courier New", monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.integration-diff { max-height: 320px; margin-top: 10px; padding: 12px; border: 1px solid #e7e3dd; border-radius: 8px; background: #f8f7f4; overflow: auto; }
+.integration-diff pre { margin: 0; color: #4f4b54; font-family: Consolas, "Courier New", monospace; font-size: 9px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.integration-diff .worktree-inline-note { margin-top: 8px; }
+.integration-actions { display: flex; justify-content: flex-end; margin-top: 14px; padding-top: 13px; border-top: 1px solid #ebe7e1; }
 .archived-toggle { display: inline-flex; align-items: center; gap: 6px; color: #aaa4b1; font-size: 9px; cursor: pointer; }
 .archived-toggle input { width: 13px; height: 13px; margin: 0; accent-color: #bd91ff; }
 .project-list { display: grid; gap: 9px; }

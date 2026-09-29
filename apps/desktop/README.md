@@ -43,6 +43,10 @@ Los **Espacios** agrupan proyectos que trabajan juntos (p. ej. "App finanzas" co
 
 En **Proyectos** puedes crear, renombrar, archivar y eliminar espacios (eliminar solo borra la agrupación, nunca los proyectos), filtrar la lista por espacio y asignar cada proyecto con casillas. En **Tareas** el selector de espacio filtra el proyecto y el botón **Lanzar espacio** (con confirmación) lanza las tareas listas de todos sus proyectos, agregando los resultados.
 
+## Integración revisable
+
+Cada entorno con estado listo ofrece **Revisar cambios**: muestra la rama frente a la rama activa del checkout principal (commits de adelanto/retraso, archivos y diff recortado) y el botón **Integrar** hace un merge explícito `--no-commit --no-ff` seguido de commit. Si algún lado tiene cambios sin guardar, se bloquea; si hay conflictos, se aborta sin tocar tu rama y se listan los archivos en conflicto. El entorno se conserva tras integrar por si necesitas volver a su rama.
+
 ## Comprobaciones
 
 ```powershell
